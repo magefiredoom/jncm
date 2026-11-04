@@ -1,0 +1,73 @@
+# TASKS — jncm
+
+Legend: `[ ]` todo, `[x]` done. Tick a box only after its acceptance command passed in the current session and the output tail is pasted into docs/STATE.md.
+Work on the first unchecked task. One task per session unless told otherwise.
+"Gate" items are run by the human on the cluster; agents prepare them but do not run long jobs.
+
+## M0 — Scaffold and data
+
+- [ ] **T0.1 Skeleton.** Package `jncm/` with `config.py` (dataclasses, YAML loader, `--set a.b=c` overrides), `utils.py` (seeding, JSONL logger, `bits_per_position`), `configs/smoke.yaml`, `configs/tinystories_dev.yaml`, `requirements.txt`, `pytest.ini`, `.gitignore` (data/, results/, models/, *.pt).
+  Accept: `pytest -q` passes, including a config round-trip test (YAML -> dataclass -> YAML) and an override test.
+- [ ] **T0.2 Data prep script.** `scripts/prep_tinystories.py` per SPEC section 3, with `--max_stories` for tests.
+  Accept: `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` writes `train.bin`, `val.bin`, `meta.json`, `tokenizer.json` (needs internet; run on a login node or laptop). A test with a tiny local text fixture checks packing: windows are exactly L tokens, `<eos>` separates stories, nothing overlaps.
+- [ ] **T0.3 Data loader.** `jncm/data.py`: memmap dataset and infinite seeded batch iterator returning LongTensor [B, L]; helper that counts positions seen.
+  Accept: tests for shapes, determinism under a fixed seed, and train/val disjointness.
+
+## M1 — Evaluation harness
+
+- [ ] **T1.1 Gen PPL and entropy.** `jncm/eval/genppl.py`: `gen_ppl(texts, scorer)`, `unigram_entropy(token_id_lists)`, `GPT2Scorer` (local path from `$GPT2_LARGE_PATH`, offline), plus `scripts/fetch_models.py` (login node) to download gpt2-large.
+  Accept: tests use a fake scorer (no download). Check entropy of a uniform distribution over n distinct tokens equals ln n, and a perplexity case with known NLLs.
+- [ ] **T1.2 Protocol gate on real data.** `scripts/eval_data_row.py` decodes N real validation sequences and reports Gen PPL and H.
+  Accept (human runs it): about 9.67 PPL and about 3.96 H (SPEC 6.1). Record the numbers in STATE.md. If outside tolerance, write a diagnosis in docs/QUESTIONS.md; do not tune the metric toward the numbers.
+
+## M2 — Tokenizer
+
+- [ ] **T2.1 Levels.** `jncm/levels.py`: schedule, `down(x, l)`, `up(x, L)`.
+  Accept: tests for schedule properties (several L, K including smoke and dev), `down(x, L)` and `up(x, L)` are identities, `down(x, 1)` equals the mean over positions, output shapes.
+- [ ] **T2.2 Tokenizer.** `jncm/tokenizer/` (trunk, `vq`, `noisy`, decoder) per SPEC section 4.
+  Accept tests (CPU, smoke config):
+  (a) output shapes for both variants;
+  (b) chain identity: `zhat[k] - zhat[k-1]` equals the level-k contribution, and `z - zhat[K]` equals the final residual;
+  (c) `reconstruct(enc.codes)` reproduces `enc.zhat` exactly;
+  (d) with cutoff k the decoder input is `zhat[k]`;
+  (e) nested-dropout sampler: empirical cutoff frequencies match p_drop;
+  (f) vq: EMA update changes codebooks; dead-code reinit triggers on an engineered dead code;
+  (g) noisy: every clean code c_k has unit power per position (LayerNorm), and the empirical std of `codes - targets` matches sigma_k;
+  (h) overfit-a-batch: both variants reach at least 99% token accuracy on 16 fixed sequences within 600 CPU steps (adjust lr and steps, never the threshold).
+- [ ] **T2.3 Tokenizer training.** `jncm/train_tokenizer.py` per SPEC 4.4 and 4.5: AdamW with cosine schedule, bf16 on CUDA, checkpoint and resume, diagnostics every `eval_every`, position accounting.
+  Accept: `python -m jncm.train_tokenizer --config configs/smoke.yaml --steps 50` finishes on CPU and writes `metrics.jsonl` containing `acc_cum`, `acc_full`, `tok_positions`, and the variant-specific diagnostics.
+- **Gate G0a (human, GPU).** TinyStories dev tokenizers: vq reaches >= 99.9% exact-token accuracy on validation; noisy reaches >= 99.5% (record the number; if lower, report per-level `acc_cum` before changing d_k or sigma_k). `acc_cum` should rise gradually.
+
+## M3 — Generator
+
+- [ ] **T3.1 Backbone.** Level-block transformer per SPEC 5.1 and 5.2.
+  Accept tests: (a) **no leak**: with `eval()` and a fixed seed, two inputs that differ only in codes of levels >= k give identical level-k outputs; (b) padding invariance: changing values at padded positions does not change valid outputs; (c) shapes.
+- [ ] **T3.2 Heads and losses.** `ce`, `regress`, `flow` per SPEC 5.3.
+  Accept tests: ce and regress overfit a fixed batch; flow learns a 2-D toy (mixture of two Gaussians at +-1, std 0.1) and its samples are bimodal (at least 35% in each mode); seeded determinism.
+- [ ] **T3.3 Corruption.** `generator/corruption.py` per SPEC 5.4.
+  Accept tests: empirical swap rate matches p_j within 0.03; targets are untouched; `none` is the identity.
+- [ ] **T3.4 Sampler.** `generator/sample.py` per SPEC 5.6.
+  Accept tests: exactly K backbone calls (forward hook), correct shapes, token ids in [0, V), same seed gives same samples.
+- [ ] **T3.5 Generator training.** `jncm/train_generator.py` per SPEC 5.5 to 5.7: frozen tokenizer checkpoint, all levels in one pass, periodic sampling plus Gen PPL hook, position accounting, resume.
+  Accept (`pytest -m slow`, CPU): memorization test. Overfit the tokenizer on 8 fixed sequences, then the generator; sampled outputs match the training sequences at >= 90% token accuracy for `ce` and `regress`, >= 80% for `flow`.
+
+## M4 — Experiment infrastructure
+
+- [ ] **T4.1 Slurm templates.** `scripts/slurm/{prep,tok,gen,eval}.sbatch`: use `$SLURM_ACCOUNT`, offline environment variables (`HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`), venv activation, `--time` and GPU request as clearly marked placeholders, array jobs for seeds. TODO markers are allowed only here; list every one under "Human must fill" in STATE.md.
+- [ ] **T4.2 Eval and plots.** `scripts/run_eval.py` (evaluate generator checkpoints at 10/25/50/100% of training, write results JSON), `scripts/plot_curves.py` (Gen PPL against `total_positions`, with an entropy panel; one line per run; reads `results/**/metrics.jsonl`).
+- [ ] **T4.3 Runbook.** `RUNBOOK.md` with exact commands for Phase 0 (vq + ce) and Phase 1 (noisy + regress, noisy + flow), with blank fields for wall-clock.
+- **Gate G0 (human).** vq + ce on TinyStories dev budget: Gen PPL <= 20 with H >= 3.8 (NCM's ablation runs at this budget landed between 15.4 and 19.6).
+- **Gate G1 (human).** noisy + flow within 15% of the G0 Gen PPL at equal `total_positions`, with entropy within 0.15 of data. Also report noisy + regress.
+
+## M5 — JEPA joint mode (SPEC section 8)
+
+- [ ] **T5.1 EMA.** `jncm/jepa/ema.py`. Tests: update numerics against a hand-computed value; target has no grad; target is in eval mode; momentum schedule endpoints.
+- [ ] **T5.2 VICReg.** `jncm/jepa/vicreg.py`. Tests: iid N(0,I) gives var term about 0 and small cov; a constant gives var = gamma; correlated dimensions give cov > 0.
+- [ ] **T5.3 Joint trainer.** `jncm/jepa/joint.py`, `jncm/train_jepa.py`, all flags, diagnostics (std, effective rank, R2 per level, collapse alarm).
+  Accept: smoke overfit test; each flag combination of the 2x2 runs 50 CPU steps without error.
+- [ ] **T5.4 Ablation configs and runbook section.**
+- **Gate G2 (human).** JEPA variant matches or beats the best Phase-1 variant at equal `total_positions`. If not, the paper becomes discrete versus continuous generation, with JEPA as a reported negative result.
+
+## M6 — Later (spec to be written after G1/G2)
+
+Unconditional prior on level 1 and LM1B (bert-base-uncased, L = 128, [CLS] separators); Sudoku; XSum / WMT14 prefix conditioning; MBR decoding. Do not start M6 from this file.
