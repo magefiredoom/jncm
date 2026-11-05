@@ -1,0 +1,27 @@
+# Data, models, results
+data/
+models/
+results/
+
+# PyTorch checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# Python cache and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+*.egg-info/
+build/
+dist/

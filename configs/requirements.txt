@@ -1,0 +1,8 @@
+torch
+numpy
+pyyaml
+tokenizers
+datasets
+transformers
+pytest
+matplotlib
