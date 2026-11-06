@@ -12,7 +12,8 @@ def get_level_schedule(L: int, K: int) -> list[int]:
     """
     Compute level schedule l_k for k = 1..K (SPEC Section 2).
 
-    Formula: l_k = round(1 + (k - 1) * (L - 1) / (K - 1))
+    Exact integer formula: l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1)).
+    This is half-up rounding, not Python's banker's rounding.
     Must satisfy l_1 = 1, l_K = L, and be strictly increasing.
     """
     if K < 1:
@@ -22,10 +23,10 @@ def get_level_schedule(L: int, K: int) -> list[int]:
     if K == 1:
         return [L]
 
-    schedule: list[int] = []
-    for k in range(1, K + 1):
-        l_k = int(round(1.0 + (k - 1) * (L - 1) / (K - 1)))
-        schedule.append(l_k)
+    denom = 2 * (K - 1)
+    schedule: list[int] = [
+        1 + (2 * (k - 1) * (L - 1) + (K - 1)) // denom for k in range(1, K + 1)
+    ]
 
     if schedule[0] != 1:
         raise ValueError(f"Level schedule must start at 1, got {schedule[0]}")
