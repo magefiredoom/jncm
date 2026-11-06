@@ -1,17 +1,31 @@
 # STATE — jncm
 
-Last updated: 2026-11-06 (T4.1 partial: tok.sbatch + prep.sbatch; 64 tests pass on CPU)
+Last updated: 2026-11-06 (T3.1 backbone done: no-leak + padding-invariance tests; 73 tests pass on CPU)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 code complete; **T2.4 complete**; **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2. M3 (generator) not started.
-- Last completed task: T2.4 (review findings F1–F10, tests first, one commit per finding).
+- Milestone / task in progress: M0–M2 code complete; **T2.4 complete**; **T3.1 complete** (`jncm/generator/backbone.py`); **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
+- Last completed task: T3.1 (level-block backbone, SPEC 5.1/5.2, acceptance tests a–c).
+- Next task: T3.2 (heads and losses). Not started.
 - T4.1 is deliberately **not** ticked: `scripts/slurm/{gen,eval}.sbatch` do not exist yet.
 - T0.2 real data prep and T1.2 real-data protocol gate remain human-run; their CPU tests pass.
-- Gate G0a is next after T1.2; do not start T3.1 until instructed.
+- Gate G0a is next after T1.2 (cluster, human).
 
 ## VERIFIED (command + last lines of output)
+
+### T3.1 backbone — no-leak, padding invariance, shapes
+- `pytest -q tests/test_generator_backbone.py`
+  `.........                                                                [100%]`
+  `9 passed in 2.04s`
+  Covers (a) for k = 1..K, level-k outputs are bit-identical (`torch.equal`) when the chain codes at levels >= k are replaced, for both `vq` and `noisy`; (b) level-k output does change when only level k-1 codes change, so the no-leak test is not vacuous; (c) garbage at padded positions (`randn*100`) leaves every valid output bit-identical through `forward_levels`; (d) shapes `[B, l_k, H]` for all K levels plus the single-level `embed_level`/`forward` path, which matches the packed path to 1e-5; (e) `embed_levels` raises when fewer than K-1 prefix codes are given.
+- Test-teeth probe (monkeypatched mutants, then restored):
+  `no-leak (level k sees its own code): mutant killed: vq: level 1 output changed when only codes of levels >= 1 changed`
+  `padding (mask dropped): mutant killed: padding leaked into level 1`
+- Full suite from repo root: `pytest -x -q`
+  `........................................................................ [ 98%]`
+  `.                                                                        [100%]`
+  `73 passed in 8.43s`
 
 ### T4.1 partial — sbatch syntax, trainer flags, suite
 - `bash -n scripts/slurm/tok.sbatch; echo "tok.sbatch bash -n exit=$?"; bash -n scripts/slurm/prep.sbatch; echo "prep.sbatch bash -n exit=$?"`
@@ -58,6 +72,11 @@ Rule: newest information wins. Rewrite sections; do not append history.
 2. **Keep the learned QKV/output projections and delete old smoke checkpoints.** All pre-existing `.pt` files under `results/` were deleted; only checkpoints from the current architecture remain (`results/tok_vq_t24`). Old Gemini/pre-QKV checkpoints are not loadable.
 3. **Level schedule uses the exact half-up integer formula** `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` (SPEC 2 / v1.2, F10). No Python `round`.
 
+## Files touched in T3.1
+- Code: `jncm/generator/backbone.py` (was untracked scratch from an earlier session; reviewed, no behavioural change needed), `jncm/generator/__init__.py`.
+- Tests: `tests/test_generator_backbone.py` (new, 9 tests).
+- Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
+
 ## Files touched in T4.1 (partial)
 - `scripts/slurm/tok.sbatch`, `scripts/slurm/prep.sbatch` (new), `docs/STATE.md`.
 
@@ -70,7 +89,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 ## UNVERIFIED / not run
 - T0.2 real data prep (`python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test`): needs Hugging Face network access; not run. Packing/streaming tests pass.
 - T1.2 protocol gate on real data (`scripts/eval_data_row.py` with GPT-2-large): needs GPT-2-large weights and real TinyStories; not run. Mock test passes; `--help` verified.
-- T3.1–T3.5 generator: not implemented. Do not treat generator behavior as verified.
+- T3.2–T3.5 generator: not implemented. T3.1 is verified only by unit tests on the eval-mode module — no generator training, head, corruption or sampling run has exercised it yet, so generator behaviour as a whole is unverified.
 - G0a/G0/G1/G2: human cluster gates, not run.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 
@@ -82,12 +101,15 @@ Rule: newest information wins. Rewrite sections; do not append history.
 5. `git_sha.txt` now ends in `-dirty` when the working tree has uncommitted changes.
 6. T0.2 and T1.2 remain unchecked in TASKS because their real-data acceptance runs have not happened.
 7. `tok.sbatch` resumes from `results/<run_id>/ckpt/latest.pt`, which the trainer rewrites every `train.save_every` steps (5000 in the dev config), so a preempted job loses at most that many steps. Resume already does not restore the data iterator or RNG (item 2).
+8. The working tree carries two uncommitted edits from an earlier session (`tests/test_review_fixes.py`, `tests/test_train_tokenizer.py` pass an explicit temporary `data_dir` to `train`). They are unrelated to T3.1 and were left uncommitted; the suite passes with them in place.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
 - VQ `codes` remain straight-through vectors so decoder gradients reach the encoder; `targets` remain integer indices.
 - Learned Q/K/V and output projections are part of the SPEC's pre-LN transformer block.
 - SPEC v1.2 resolves the schedule tie-breaking ambiguity: exact half-up integer arithmetic.
+- SPEC 5.1 says "64 log-spaced frequencies" without a range: SinPos uses 64 geometric frequencies from 1 to 1e-4 cycles per normalized position, applies 2*pi*p_i*freq, concatenates sin and cos (128 features), and projects linearly to H.
+- SPEC 5.2's "dropout 0.1" is applied as residual dropout (after the attention output projection and after the MLP), as in the tokenizer blocks; attention-internal dropout is 0.
 
 ## Human must fill / do
 - Run `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` on a login node (internet) to satisfy T0.2.
@@ -125,9 +147,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. T3.1 (`jncm/generator/backbone.py`: level-block transformer with no-leak guarantee). Do not start until instructed.
-2. T3.2 (`jncm/generator/heads.py`: ce, regress, and flow matching heads).
-3. T3.3 (`jncm/generator/corruption.py`: none/swap/noise per SPEC 5.4).
+1. T3.2 (`jncm/generator/heads.py`: ce, regress, and flow matching heads on the T3.1 level outputs).
+2. T3.3 (`jncm/generator/corruption.py`: none/swap/noise per SPEC 5.4).
+3. T3.4 (`jncm/generator/sample.py`: exactly K backbone calls per batch).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - G0a: not run

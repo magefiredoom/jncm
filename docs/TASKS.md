@@ -42,8 +42,8 @@ Work on the first unchecked task. One task per session unless told otherwise.
 
 ## M3 — Generator
 
-- [ ] **T3.1 Backbone.** Level-block transformer per SPEC 5.1 and 5.2.
-  Accept tests: (a) **no leak**: with `eval()` and a fixed seed, two inputs that differ only in codes of levels >= k give identical level-k outputs; (b) padding invariance: changing values at padded positions does not change valid outputs; (c) shapes.
+- [x] **T3.1 Backbone.** Level-block transformer per SPEC 5.1 and 5.2.
+  Accept tests: (a) **no leak**: with `eval()` and a fixed seed, two inputs that differ only in codes of levels >= k give identical level-k outputs; (b) padding invariance: changing values at padded positions does not change valid outputs; (c) shapes. — PASSED 2026-11-06 (`tests/test_generator_backbone.py`: 9 tests, both `vq` and `noisy`; leak and dropped-mask mutants each fail the suite; full suite 73 passed).
 - [ ] **T3.2 Heads and losses.** `ce`, `regress`, `flow` per SPEC 5.3.
   Accept tests: ce and regress overfit a fixed batch; flow learns a 2-D toy (mixture of two Gaussians at +-1, std 0.1) and its samples are bimodal (at least 35% in each mode); seeded determinism.
 - [ ] **T3.3 Corruption.** `generator/corruption.py` per SPEC 5.4.
