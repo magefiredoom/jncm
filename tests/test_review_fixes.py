@@ -106,6 +106,22 @@ def test_f4_meta_mismatch_raises(tmp_path: Path) -> None:
         setup_data(cfg, data_dir=d)
 
 
+# ---------------------------------------------------------------- F5
+def test_f5_eval_data_row_help_works() -> None:
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "scripts/eval_data_row.py", "--help"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--n_samples" in proc.stdout
+
+
 # ---------------------------------------------------------------- F6
 def test_f6_unknown_config_keys_raise() -> None:
     with pytest.raises(ValueError):
