@@ -6,25 +6,25 @@ Work on the first unchecked task. One task per session unless told otherwise.
 
 ## M0 — Scaffold and data
 
-- [ ] **T0.1 Skeleton.** Package `jncm/` with `config.py` (dataclasses, YAML loader, `--set a.b=c` overrides), `utils.py` (seeding, JSONL logger, `bits_per_position`), `configs/smoke.yaml`, `configs/tinystories_dev.yaml`, `requirements.txt`, `pytest.ini`, `.gitignore` (data/, results/, models/, *.pt).
-  Accept: `pytest -q` passes, including a config round-trip test (YAML -> dataclass -> YAML) and an override test.
+- [x] **T0.1 Skeleton.** Package `jncm/` with `config.py` (dataclasses, YAML loader, `--set a.b=c` overrides), `utils.py` (seeding, JSONL logger, `bits_per_position`), `configs/smoke.yaml`, `configs/tinystories_dev.yaml`, `requirements.txt`, `pytest.ini`, `.gitignore` (data/, results/, models/, *.pt).
+  Accept: `pytest -q` passes, including a config round-trip test (YAML -> dataclass -> YAML) and an override test. — PASSED 2026-11-06 (`pytest -x -q`: 49 passed).
 - [ ] **T0.2 Data prep script.** `scripts/prep_tinystories.py` per SPEC section 3, with `--max_stories` for tests.
-  Accept: `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` writes `train.bin`, `val.bin`, `meta.json`, `tokenizer.json` (needs internet; run on a login node or laptop). A test with a tiny local text fixture checks packing: windows are exactly L tokens, `<eos>` separates stories, nothing overlaps.
-- [ ] **T0.3 Data loader.** `jncm/data.py`: memmap dataset and infinite seeded batch iterator returning LongTensor [B, L]; helper that counts positions seen.
-  Accept: tests for shapes, determinism under a fixed seed, and train/val disjointness.
+  Accept: `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` writes `train.bin`, `val.bin`, `meta.json`, `tokenizer.json` (needs internet; run on a login node or laptop). A test with a tiny local text fixture checks packing: windows are exactly L tokens, `<eos>` separates stories, nothing overlaps. — Packing tests pass; real prep not run (no network).
+- [x] **T0.3 Data loader.** `jncm/data.py`: memmap dataset and infinite seeded batch iterator returning LongTensor [B, L]; helper that counts positions seen.
+  Accept: tests for shapes, determinism under a fixed seed, and train/val disjointness. — PASSED 2026-11-06.
 
 ## M1 — Evaluation harness
 
-- [ ] **T1.1 Gen PPL and entropy.** `jncm/eval/genppl.py`: `gen_ppl(texts, scorer)`, `unigram_entropy(token_id_lists)`, `GPT2Scorer` (local path from `$GPT2_LARGE_PATH`, offline), plus `scripts/fetch_models.py` (login node) to download gpt2-large.
-  Accept: tests use a fake scorer (no download). Check entropy of a uniform distribution over n distinct tokens equals ln n, and a perplexity case with known NLLs.
+- [x] **T1.1 Gen PPL and entropy.** `jncm/eval/genppl.py`: `gen_ppl(texts, scorer)`, `unigram_entropy(token_id_lists)`, `GPT2Scorer` (local path from `$GPT2_LARGE_PATH`, offline), plus `scripts/fetch_models.py` (login node) to download gpt2-large.
+  Accept: tests use a fake scorer (no download). Check entropy of a uniform distribution over n distinct tokens equals ln n, and a perplexity case with known NLLs. — PASSED 2026-11-06 (fake-scorer tests; real GPT-2 path unverified).
 - [ ] **T1.2 Protocol gate on real data.** `scripts/eval_data_row.py` decodes N real validation sequences and reports Gen PPL and H.
   Accept (human runs it): about 9.67 PPL and about 3.96 H (SPEC 6.1). Record the numbers in STATE.md. If outside tolerance, write a diagnosis in docs/QUESTIONS.md; do not tune the metric toward the numbers.
 
 ## M2 — Tokenizer
 
-- [ ] **T2.1 Levels.** `jncm/levels.py`: schedule, `down(x, l)`, `up(x, L)`.
-  Accept: tests for schedule properties (several L, K including smoke and dev), `down(x, L)` and `up(x, L)` are identities, `down(x, 1)` equals the mean over positions, output shapes.
-- [ ] **T2.2 Tokenizer.** `jncm/tokenizer/` (trunk, `vq`, `noisy`, decoder) per SPEC section 4.
+- [x] **T2.1 Levels.** `jncm/levels.py`: schedule, `down(x, l)`, `up(x, L)`.
+  Accept: tests for schedule properties (several L, K including smoke and dev), `down(x, L)` and `up(x, L)` are identities, `down(x, 1)` equals the mean over positions, output shapes. — PASSED 2026-11-06.
+- [x] **T2.2 Tokenizer.** `jncm/tokenizer/` (trunk, `vq`, `noisy`, decoder) per SPEC section 4.
   Accept tests (CPU, smoke config):
   (a) output shapes for both variants;
   (b) chain identity: `zhat[k] - zhat[k-1]` equals the level-k contribution, and `z - zhat[K]` equals the final residual;
@@ -33,9 +33,9 @@ Work on the first unchecked task. One task per session unless told otherwise.
   (e) nested-dropout sampler: empirical cutoff frequencies match p_drop;
   (f) vq: EMA update changes codebooks; dead-code reinit triggers on an engineered dead code;
   (g) noisy: every clean code c_k has unit power per position (LayerNorm), and the empirical std of `codes - targets` matches sigma_k;
-  (h) overfit-a-batch: both variants reach at least 99% token accuracy on 16 fixed sequences within 600 CPU steps (adjust lr and steps, never the threshold).
-- [ ] **T2.3 Tokenizer training.** `jncm/train_tokenizer.py` per SPEC 4.4 and 4.5: AdamW with cosine schedule, bf16 on CUDA, checkpoint and resume, diagnostics every `eval_every`, position accounting.
-  Accept: `python -m jncm.train_tokenizer --config configs/smoke.yaml --steps 50` finishes on CPU and writes `metrics.jsonl` containing `acc_cum`, `acc_full`, `tok_positions`, and the variant-specific diagnostics.
+  (h) overfit-a-batch: both variants reach at least 99% token accuracy on 16 fixed sequences within 600 CPU steps (adjust lr and steps, never the threshold). — PASSED 2026-11-06 (all a–h, plus checkpoint round-trip).
+- [x] **T2.3 Tokenizer training.** `jncm/train_tokenizer.py` per SPEC 4.4 and 4.5: AdamW with cosine schedule, bf16 on CUDA, checkpoint and resume, diagnostics every `eval_every`, position accounting.
+  Accept: `python -m jncm.train_tokenizer --config configs/smoke.yaml --steps 50` finishes on CPU and writes `metrics.jsonl` containing `acc_cum`, `acc_full`, `tok_positions`, and the variant-specific diagnostics. — PASSED 2026-11-06 (vq and noisy, 50 CPU steps each).
 - **Gate G0a (human, GPU).** TinyStories dev tokenizers: vq reaches >= 99.9% exact-token accuracy on validation; noisy reaches >= 99.5% (record the number; if lower, report per-level `acc_cum` before changing d_k or sigma_k). `acc_cum` should rise gradually.
 
 ## M3 — Generator

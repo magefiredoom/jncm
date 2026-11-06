@@ -35,6 +35,8 @@ class TransformerBlock(nn.Module):
         self.n_heads = n_heads
         self.ln1 = nn.LayerNorm(d)
         self.ln2 = nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)
+        self.out_proj = nn.Linear(d, d)
         self.mlp = nn.Sequential(
             nn.Linear(d, int(d * mlp_ratio)),
             nn.GELU(),
@@ -42,14 +44,15 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pre-LN Self-Attention
+        # Pre-LN Self-Attention (standard learned Q/K/V projections)
         normed = self.ln1(x)
         b, t, d = normed.shape
         head_dim = d // self.n_heads
-        qkv = normed.reshape(b, t, self.n_heads, head_dim).transpose(1, 2)
-        attn_out = F.scaled_dot_product_attention(qkv, qkv, qkv, is_causal=False)
+        qkv = self.qkv(normed).reshape(b, t, 3, self.n_heads, head_dim)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)  # [B, heads, T, head_dim]
+        attn_out = F.scaled_dot_product_attention(q, k, v, is_causal=False)
         attn_out = attn_out.transpose(1, 2).reshape(b, t, d)
-        x = x + attn_out
+        x = x + self.out_proj(attn_out)
 
         # Pre-LN MLP
         x = x + self.mlp(self.ln2(x))
@@ -293,6 +296,8 @@ class MultiscaleTokenizer(nn.Module):
                 p_drop = self.cfg.p_drop if self.training else 0.0
             cut = sample_cutoff(self.K, p_drop=p_drop, generator=generator)
         else:
+            if not 1 <= cutoff <= self.K:
+                raise ValueError(f"cutoff must be in 1..{self.K}, got {cutoff}")
             cut = cutoff
 
         enc = self.encode(x, cutoff=cut, generator=generator)

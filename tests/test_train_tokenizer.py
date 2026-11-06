@@ -8,8 +8,15 @@ import pytest
 import torch
 
 from jncm.config import load_config
-from jncm.train_tokenizer import train
+from jncm.train_tokenizer import setup_data, train
 from jncm.utils import JSONLLogger
+
+
+def test_setup_data_refuses_synthetic_for_real_runs(tmp_path: Path) -> None:
+    cfg = load_config(Path("configs/smoke.yaml"))
+    cfg.train.allow_synthetic_data = False
+    with pytest.raises(FileNotFoundError):
+        setup_data(cfg, data_dir=tmp_path / "missing_data")
 
 
 def test_train_tokenizer_smoke_vq(tmp_path: Path) -> None:
@@ -40,6 +47,8 @@ def test_train_tokenizer_smoke_vq(tmp_path: Path) -> None:
     assert "acc_full" in last_record
     assert "tok_positions" in last_record
     assert last_record["tok_positions"] == 10 * 4 * cfg.L
+    assert last_record["tok_positions"] + last_record["gen_positions"] == last_record["total_positions"]
+    assert "nominal_bits" in last_record
     assert "codebook_usage" in last_record
     assert "codebook_perplexity" in last_record
 
@@ -65,6 +74,7 @@ def test_train_tokenizer_smoke_noisy(tmp_path: Path) -> None:
     assert "acc_cum" in last_record
     assert "acc_full" in last_record
     assert "tok_positions" in last_record
+    assert last_record["tok_positions"] + last_record["gen_positions"] == last_record["total_positions"]
     assert "std_min" in last_record
     assert "std_mean" in last_record
     assert "eff_rank" in last_record

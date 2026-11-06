@@ -57,14 +57,19 @@ def setup_data(
     train_bin = d_path / "train.bin"
     val_bin = d_path / "val.bin"
 
-    # Use real datasets if present and matching sequence length
+    # Use real datasets if present. Never silently substitute random data on a
+    # real run: synthetic fallback must be explicitly enabled in the config.
     if train_bin.exists() and val_bin.exists():
-        try:
-            train_ds = MemmapDataset(train_bin, seq_len=cfg.L)
-            val_ds = MemmapDataset(val_bin, seq_len=cfg.L)
-            return train_ds, val_ds
-        except Exception:
-            pass
+        train_ds = MemmapDataset(train_bin, seq_len=cfg.L)
+        val_ds = MemmapDataset(val_bin, seq_len=cfg.L)
+        return train_ds, val_ds
+
+    if not cfg.train.allow_synthetic_data:
+        raise FileNotFoundError(
+            f"Prepared data not found at {d_path} (need train.bin and val.bin). "
+            "Run scripts/prep_tinystories.py on a login node, or set "
+            "train.allow_synthetic_data=true for a synthetic smoke run."
+        )
 
     # Create synthetic dataset for CPU smoke tests and self-contained runs
     target_dir = temp_dir if temp_dir is not None else Path("data/synthetic_smoke")
@@ -119,6 +124,9 @@ def run_diagnostics(
             "total_positions": tok_positions,
         }
 
+        # Nominal capacity is logged for both variants (SPEC 4.3).
+        record["nominal_bits"] = bits_per_position(cfg)
+
         if cfg.tokenizer.quantizer == "vq":
             usages = []
             perplexities = []
@@ -140,7 +148,6 @@ def run_diagnostics(
             record["std_min"] = stds_min
             record["std_mean"] = stds_mean
             record["eff_rank"] = eff_ranks
-            record["nominal_bits"] = bits_per_position(cfg)
 
     model.train()
     return record

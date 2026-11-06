@@ -5,6 +5,7 @@ dead code reinit, unit power, and batch overfitting on CPU.
 """
 
 import math
+from pathlib import Path
 import pytest
 import torch
 import torch.nn.functional as F
@@ -116,6 +117,16 @@ def test_cutoff_decoder_input() -> None:
         assert torch.equal(logits, logits_direct)
 
 
+def test_cutoff_out_of_range_raises() -> None:
+    seed_everything(505)
+    cfg = TokenizerConfig(d=64, K=4, quantizer="vq")
+    tok = MultiscaleTokenizer(cfg, L=32, V=64)
+    tok.eval()
+    x = torch.randint(0, 64, (2, 32))
+    with pytest.raises(ValueError):
+        tok(x, cutoff=5)
+
+
 def test_nested_dropout_frequencies() -> None:
     # Acceptance (e): nested-dropout sampler empirical cutoff frequencies match p_drop
     seed_everything(404)
@@ -189,6 +200,31 @@ def test_noisy_unit_power_and_empirical_noise_std() -> None:
         diff = enc.codes[k] - clean_c
         empirical_std = torch.std(diff).item()
         assert abs(empirical_std - sigma_k) < 0.03
+
+
+def test_tokenizer_checkpoint_roundtrip(tmp_path: Path) -> None:
+    # Acceptance (f): save/load a tokenizer checkpoint and get identical outputs
+    seed_everything(909)
+    B, L, V = 4, 32, 64
+    x = torch.randint(0, V, (B, L))
+
+    for q_type in ["vq", "noisy"]:
+        cfg = TokenizerConfig(d=64, K=4, quantizer=q_type)
+        tok = MultiscaleTokenizer(cfg, L=L, V=V)
+        tok.eval()
+
+        ckpt_path = tmp_path / f"{q_type}.pt"
+        torch.save(tok.state_dict(), ckpt_path)
+
+        tok_loaded = MultiscaleTokenizer(cfg, L=L, V=V)
+        tok_loaded.load_state_dict(torch.load(ckpt_path, map_location="cpu"))
+        tok_loaded.eval()
+
+        gen_a = torch.Generator().manual_seed(123)
+        gen_b = torch.Generator().manual_seed(123)
+        logits_a = tok.decode(tok.encode(x, generator=gen_a).zhat[-1])
+        logits_b = tok_loaded.decode(tok_loaded.encode(x, generator=gen_b).zhat[-1])
+        assert torch.equal(logits_a, logits_b)
 
 
 def test_overfit_batch_vq() -> None:

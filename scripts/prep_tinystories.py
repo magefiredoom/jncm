@@ -143,7 +143,7 @@ def main() -> None:
         "train_tokens": int(train_windows.size),
         "val_windows": int(val_windows.shape[0]),
         "val_tokens": int(val_windows.size),
-        "V": args.vocab_size,
+        "V": int(tokenizer.get_vocab_size()),
         "L": args.seq_len,
         "pad_id": pad_id,
         "eos_id": eos_id,

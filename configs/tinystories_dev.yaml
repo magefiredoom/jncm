@@ -63,6 +63,7 @@ train:
   batch_size: 512
   eval_every: 500
   save_every: 5000
+  allow_synthetic_data: false
 
 eval:
   n_samples: 256

@@ -79,6 +79,7 @@ class TrainConfig:
     batch_size: int = 16
     eval_every: int = 50
     save_every: int = 500
+    allow_synthetic_data: bool = False
 
 
 @dataclass
