@@ -57,3 +57,7 @@ Options for the researcher (pick one; none is implemented):
 - Resume restores model and optimizer (including the new decay/no-decay groups) but not the data iterator or RNG. Acceptable for dev; same batch size and seed required for reproducible resume.
 - Weight decay now excludes embeddings, LayerNorm parameters and biases. This changes optimizer parameter groups, so pre-F9 checkpoints cannot be resumed (model-only loading still works).
 - `git_sha.txt` is suffixed with `-dirty` when the working tree has uncommitted changes.
+
+## Q9 — T4.1 offline variables versus `prep.sbatch` (ASSUMPTION, non-blocking)
+TASKS T4.1 asks every Slurm template for the offline environment variables (`HF_HUB_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`). `scripts/slurm/prep.sbatch` exists to download `roneneldan/TinyStories` (SPEC 3, AGENTS rule 6: downloads live only in `scripts/prep_*.py`), so setting them would make the job it exists to run fail.
+**Assumption:** `tok.sbatch` and `gen.sbatch` (and later `eval.sbatch`) set all three; `prep.sbatch` sets none and documents that it needs Hub access (internet-enabled partition or a login node). Reversible: add the three exports to `prep.sbatch` if the researcher wants prep to fail rather than reach the network.

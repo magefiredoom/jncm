@@ -1,18 +1,35 @@
 # STATE — jncm
 
-Last updated: 2026-11-06 (T3.5 trainer done; acceptance blocked for regress — Q8; 123 pass + 1 xfail)
+Last updated: 2026-11-06 (T4.1 prep/tok/gen templates done, eval moved to T4.2; Q8 still blocks T3.5; 123 pass + 1 xfail)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2, T3.3, T3.4 complete**; **T3.5 code complete but NOT ticked** — `jncm/train_generator.py` and its tests are in place, the acceptance passes for `ce` (1.000) and `flow` (0.961) and is structurally unreachable for `regress` (Q8). **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
-- Last completed task: T3.4 (`sample_tokens`).
+- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2, T3.3, T3.4, T4.1 complete**; **T3.5 code complete but NOT ticked** — `jncm/train_generator.py` and its tests are in place, the acceptance passes for `ce` (1.000) and `flow` (0.961) and is structurally unreachable for `regress` (Q8).
+- Last completed task: T4.1 (`scripts/slurm/{prep,tok,gen}.sbatch`; `eval.sbatch` moved to T4.2).
 - Open blocker: Q8 needs a researcher decision on the `regress` arm before T3.5 can be ticked. The arm is `xfail(strict=True)` so the suite stays green and the failure is still measured.
-- T4.1 is deliberately **not** ticked: `scripts/slurm/{gen,eval}.sbatch` do not exist yet.
+- T4.1 is ticked for prep/tok/gen only. TASKS now assigns `scripts/slurm/eval.sbatch` to T4.2 (it evaluates checkpoints written by `run_eval.py`).
 - T0.2 real data prep and T1.2 real-data protocol gate remain human-run; their CPU tests pass.
 - Gate G0a is next after T1.2 (cluster, human).
 
 ## VERIFIED (command + last lines of output)
+
+### T4.1 Slurm templates — prep, tok, gen (eval moved to T4.2)
+- One command, `set -o pipefail`, from the repo root: `bash -n` on each script, then the full suite.
+  `bash -n scripts/slurm/prep.sbatch exit=0`
+  `bash -n scripts/slurm/tok.sbatch exit=0`
+  `bash -n scripts/slurm/gen.sbatch exit=0`
+  `.venv/Scripts/python.exe -m pytest -x -q`
+  `123 passed, 1 xfailed in 144.20s (0:02:24)`  (EXIT=0)
+- Requirement audit from the same command's `grep -n` output:
+  - `TODO(placeholder)` lines: `prep.sbatch` 6 (wall clock), 7 (modules), 9 (venv); `tok.sbatch` 7 (wall clock), 8 (GPU type), 10 (modules), 12 (venv); `gen.sbatch` same four at 7/8/10/12.
+  - `^#SBATCH` lines are only `--job-name`, `--nodes`, `--ntasks`, `--gres=gpu:1`, `--time=HH:MM:SS`. No account, no partition, no GPU type anywhere in the three files (`--gres=gpu:1` is generic; the only `gpu:A100:1` text is the example inside a TODO comment).
+  - `HF_HUB_OFFLINE=1` + `HF_DATASETS_OFFLINE=1` + `TRANSFORMERS_OFFLINE=1`: 3/3 in `tok.sbatch` and `gen.sbatch`, 0 in `prep.sbatch` (deliberate, Q9).
+  - `set -euo pipefail` at `prep.sbatch:29`, `tok.sbatch:33`, `gen.sbatch:41`; each script then checks `.venv/bin/activate`, sources it, and exits 1 with a hint if it is missing.
+- `python -m jncm.train_tokenizer --help` lists `--resume RESUME` and `--run_id RUN_ID`; loading `configs/tinystories_dev.yaml` with `--set tokenizer.quantizer=noisy` gives `quantizer 'noisy' L 128 V 8192 max_steps 40000 save_every 5000 device cuda`.
+- Option plumbing: `tok.sbatch` requires `QUANT` (`: "${QUANT:?...}"`, case-checked to `vq|noisy`) and runs `--set tokenizer.quantizer=${QUANT} --run_id tok_${QUANT}_dev`; `gen.sbatch` requires `HEAD`, `TOKENIZER` and `RUN_ID`, maps `ce -> vq` and `regress|flow -> noisy` (SPEC 5.3), passes `--tokenizer ${TOKENIZER}`, `--set generator.head=${HEAD}`, `--set tokenizer.quantizer=${quant}`, `--run_id ${RUN_ID}`, and fails with exit 1 if the tokenizer checkpoint is absent. Both append `--resume results/<run_id>/ckpt/latest.pt` only when that file exists.
+- Not submitted: this host has no Slurm, so the jobs are syntax-checked and inspected only (UNVERIFIED as cluster jobs; see "Human must fill").
+- T4.1 TODO markers appear only in `scripts/slurm/*.sbatch` (no `TODO`/`pass`/`...` stub in `jncm/`), and this section lists every one of them.
 
 ### T3.5 generator training — frozen tokenizer, all levels per pass, accounting, resume
 - `.venv/Scripts/python.exe -m pytest -q tests/test_train_generator.py -m "not slow"`
@@ -82,14 +99,6 @@ Rule: newest information wins. Rewrite sections; do not append history.
   `.                                                                        [100%]`
   `73 passed in 8.43s`
 
-### T4.1 partial — sbatch syntax, trainer flags, suite
-- `bash -n scripts/slurm/tok.sbatch; echo "tok.sbatch bash -n exit=$?"; bash -n scripts/slurm/prep.sbatch; echo "prep.sbatch bash -n exit=$?"`
-  `tok.sbatch bash -n exit=0`
-  `prep.sbatch bash -n exit=0`
-- Full suite: `.venv/Scripts/python.exe -m pytest -q` → `64 passed in 9.69s`
-- `python -m jncm.train_tokenizer --help` lists `--resume RESUME` and `--run_id RUN_ID`; loading `configs/tinystories_dev.yaml` with `--set tokenizer.quantizer=noisy` gives `quantizer 'noisy' L 128 V 8192 max_steps 40000 save_every 5000 device cuda`.
-- Scripts checked by inspection, **not submitted**: one generic GPU (`--gres=gpu:1`), the three HF offline vars, `--run_id tok_${QUANT}_dev`, `--set tokenizer.quantizer=${QUANT}`, and `--resume results/<run_id>/ckpt/latest.pt` only when that file exists. No account or partition on any `#SBATCH` line.
-
 ### T2.4 regression tests and full suite
 - Baseline before fixes: `pytest -q tests/test_review_fixes.py`
   `6 failed, 4 passed in 1.85s`
@@ -154,8 +163,8 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Tests: `tests/test_generator_backbone.py` (new, 9 tests).
 - Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
 
-## Files touched in T4.1 (partial)
-- `scripts/slurm/tok.sbatch`, `scripts/slurm/prep.sbatch` (new), `docs/STATE.md`.
+## Files touched in T4.1
+- `scripts/slurm/prep.sbatch`, `scripts/slurm/tok.sbatch`, `scripts/slurm/gen.sbatch` (new), `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (Q9). No `eval.sbatch` — T4.2 owns it.
 
 ## Files touched in T2.4
 - Code: `jncm/config.py`, `jncm/levels.py`, `jncm/tokenizer/vq.py`, `jncm/train_tokenizer.py`, `scripts/prep_tinystories.py`.
@@ -203,6 +212,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - SPEC 5.7's generator defaults live in `generator.train` (lr 3e-4 -> 3e-5, wd 0.1, warmup 500, batch 1024, 10k steps), separate from the tokenizer's SPEC 4.4 `train` block. `smoke.yaml` overrides them to batch 16 / 200 steps so CPU smoke runs stay short; tests override them further.
 - `train_generator` reads `tok_positions` from the tokenizer checkpoint as the curve offset for SPEC 6.2; `gen_positions = step * batch * L` and `total_positions` is their sum. A resume keeps the checkpoint's `tok_positions` and recomputes `gen_positions` from the step (same batch size assumed, as in the tokenizer trainer).
 - `train_generator` requires the head/variant pairing of SPEC 5.3 (`ce` with vq, `regress`/`flow` with noisy) and fails loudly otherwise; the config does not guess.
+- Q9: T4.1 asks every template for the three `HF_*_OFFLINE` variables, but `prep.sbatch` exists to download TinyStories. `tok.sbatch`/`gen.sbatch` set all three; `prep.sbatch` sets none and says it needs Hub access. Smallest reversible choice; the submit forms and placeholder list above are the contract.
 
 ## Human must fill / do
 - Run `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` on a login node (internet) to satisfy T0.2.
@@ -210,14 +220,16 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Run `python scripts/prep_tinystories.py` to prepare `data/tinystories/`.
 - Run the T1.2 protocol gate on real validation data; record Gen PPL and H.
 - Run Gate G0a on a cluster GPU: dev tokenizers (`vq` and `noisy`); record exact-token accuracy.
-- **T4.1 placeholders (nothing is guessed in the scripts):**
-  - Account: pass `--account="$SBATCH_ACCOUNT"` on the sbatch command line (or let your submit wrapper read `$SLURM_ACCOUNT`); no account appears in either file.
-  - Partition: pass `--partition="$SBATCH_PARTITION"` on the sbatch command line; no partition appears in either file.
-  - Wall clock: `#SBATCH --time=HH:MM:SS` in both scripts is invalid on purpose (`TODO(placeholder)` at `tok.sbatch:7`, `prep.sbatch:6`). Replace it.
-  - GPU type: `tok.sbatch` asks for one generic GPU (`--gres=gpu:1`, TODO at line 8). Add a type only if FIR requires one.
-  - Modules: no `module load` line exists (TODO at `tok.sbatch:10`, `prep.sbatch:7`). Add your site's.
-  - Venv: both scripts source `.venv/bin/activate` at the repo root (TODO at `tok.sbatch:12`, `prep.sbatch:9`); create it per "Environment" below or edit the path.
-  - `prep.sbatch` must reach the Hugging Face Hub (internet-enabled partition or a login node): it deliberately does not set `HF_*_OFFLINE`.
+- **T4.1 placeholders — every one of them (nothing is guessed in the scripts):**
+  - Account: pass `--account="$SBATCH_ACCOUNT"` on the sbatch command line (or let your submit wrapper read `$SLURM_ACCOUNT`); no account appears in any of the three files.
+  - Partition: pass `--partition="$SBATCH_PARTITION"` on the sbatch command line; no partition appears in any file.
+  - Wall clock: `#SBATCH --time=HH:MM:SS` is invalid on purpose in `prep.sbatch:5`, `tok.sbatch:6`, `gen.sbatch:6` (`TODO(placeholder)` at lines 6, 7, 7). Replace each with a real limit.
+  - GPU type: `tok.sbatch` (`#SBATCH --gres=gpu:1`, line 5, TODO at line 8) and `gen.sbatch` (same, line 5, TODO at line 8) ask for one generic GPU. Add a type only if FIR requires one. `prep.sbatch` requests no GPU (CPU-only numpy/tokenizers) — that is not a missing placeholder.
+  - Modules: no `module load` line exists (TODO at `prep.sbatch:7`, `tok.sbatch:10`, `gen.sbatch:10`). Add your site's.
+  - Venv: all three source `.venv/bin/activate` at the repo root and exit 1 if it is absent (TODO at `prep.sbatch:9`, `tok.sbatch:12`, `gen.sbatch:12`); create it per "Environment" below or edit the path.
+  - `prep.sbatch` must reach the Hugging Face Hub (internet-enabled partition or a login node): it deliberately does not set `HF_*_OFFLINE` (Q9). `tok.sbatch` and `gen.sbatch` set all three offline variables.
+  - Submit forms (all from the repo root): `sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" scripts/slurm/prep.sbatch`; `... --export=ALL,QUANT=vq scripts/slurm/tok.sbatch` (then `QUANT=noisy`); `... --export=ALL,HEAD=ce,RUN_ID=gen_vq_ce_dev TOKENIZER=results/tok_vq_dev/ckpt/latest.pt scripts/slurm/gen.sbatch` (and `HEAD=regress|flow` with the `noisy` tokenizer).
+  - Not yet provided: `scripts/slurm/eval.sbatch` (T4.2). These three scripts have no `--array` seed sweep; a run's seed comes from `seed:` in the config and eval-time seed sweeps arrive with T4.2.
 
 ## Environment
 - Python / torch: Python 3.13.7, torch 2.15.0+cpu (CUDA unavailable on this host); numpy 2.5.4, pytest 9.2.0.
@@ -241,8 +253,8 @@ Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Next 3 steps
 1. Q8: decide the `regress` memorization protocol (one sequence, teacher-forced level 1, an architectural change to SPEC 5.1, or accept the ~0.36 ceiling), then tick T3.5. The trainer is ready to run: `python -m jncm.train_generator --config configs/smoke.yaml --tokenizer results/tok_vq_t24/ckpt/latest.pt --steps 50 --run_id gen_vq_t35`; `--gen_ppl` adds the GPT-2 scorer, and `sample_and_score` already switches the modules to eval and restores their modes.
-2. Finish T4.1 (`scripts/slurm/{gen,eval}.sbatch`) once T3.5/T4.2 exist.
-3. T4.2 (`scripts/run_eval.py`, `scripts/plot_curves.py`).
+2. T4.2 (`scripts/run_eval.py`, `scripts/plot_curves.py`, and `scripts/slurm/eval.sbatch`, which moved here from T4.1).
+3. T4.3 (`RUNBOOK.md`): fill the wall-clock fields using the real limits chosen above.
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - G0a: not run
