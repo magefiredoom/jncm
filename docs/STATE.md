@@ -1,18 +1,34 @@
 # STATE — jncm
 
-Last updated: 2026-11-06 (T3.4 sampler done; 109 tests pass on CPU)
+Last updated: 2026-11-06 (T3.5 trainer done; acceptance blocked for regress — Q8; 123 pass + 1 xfail)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2, T3.3, T3.4 complete** (`jncm/generator/{backbone,heads,corruption,sample}.py`); **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
-- Last completed task: T3.4 (`sample_tokens` in `generator/sample.py`, SPEC 5.6; acceptance: exactly K backbone calls, shapes/token range, seeded determinism).
-- Next task: T3.5 (`jncm/train_generator.py`, SPEC 5.5–5.7). Not started.
+- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2, T3.3, T3.4 complete**; **T3.5 code complete but NOT ticked** — `jncm/train_generator.py` and its tests are in place, the acceptance passes for `ce` (1.000) and `flow` (0.961) and is structurally unreachable for `regress` (Q8). **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
+- Last completed task: T3.4 (`sample_tokens`).
+- Open blocker: Q8 needs a researcher decision on the `regress` arm before T3.5 can be ticked. The arm is `xfail(strict=True)` so the suite stays green and the failure is still measured.
 - T4.1 is deliberately **not** ticked: `scripts/slurm/{gen,eval}.sbatch` do not exist yet.
 - T0.2 real data prep and T1.2 real-data protocol gate remain human-run; their CPU tests pass.
 - Gate G0a is next after T1.2 (cluster, human).
 
 ## VERIFIED (command + last lines of output)
+
+### T3.5 generator training — frozen tokenizer, all levels per pass, accounting, resume
+- `.venv/Scripts/python.exe -m pytest -q tests/test_train_generator.py -m "not slow"`
+  `............                                                             [100%]`
+  `12 passed, 3 deselected in 4.62s`
+  Covers (a) `load_tokenizer` returns an eval-mode, `requires_grad`-off tokenizer plus the checkpoint's `tok_positions`; wrong `L`, wrong variant and a missing file raise; (b) the weighted loss equals a manual SPEC 5.1/5.4/5.5 recomputation for `corrupt.mode` `none` and `swap`, and with `swap` the chain codes really change while the targets stay clean; (c) exactly one packed backbone pass per loss, shape `[B*K, L, H]`; (d) records carry `step`, `train_loss`, `per_level_loss`, `lr`, `data_source`, `tok_positions` (offset from the tokenizer checkpoint), `gen_positions = step*B*L`, `total_positions = sum`; (e) resume continues from the checkpoint's step and positions; (f) the eval hook writes `samples/step_<n>.txt` (<= 32 lines), decodes every sample and logs `gen_ppl` (fake scorer gives exactly exp(1) = 2.718); (g) head/variant pairing is enforced (`ce`+vq, `regress`/`flow`+noisy) and `corrupt.mode=noise` on vq raises.
+- Acceptance (`pytest -m slow`, CPU): `.venv/Scripts/python.exe -m pytest -q -m slow tests/test_train_generator.py`
+  `.x.                                                                      [100%]`
+  `2 passed, 12 deselected, 1 xfailed in 128.33s (0:02:08)`
+  Protocol: tokenizer overfit 700 steps on the 8 fixed sequences (round-trip accuracy 1.000, vq and noisy), generator batch 8, `corrupt.mode=none`. `ce`: 600 steps, lr 1e-3 -> mean best-match token accuracy **1.000**, all 8 samples exactly one training sequence. `flow`: 1200 steps, lr 2e-3 -> **0.961** (threshold 0.80, distinct matches 4). `regress`: 1000 steps, lr 1e-3 -> **0.363** and not distinct (xfail per Q8).
+- Tuning probes (temporary scripts, deleted; numbers from this session): ce 400 steps 0.980, 600 steps 1.000 (with `swap` only 0.277 at 400); regress 200/400/600/800/1000 = 0.242/0.340/0.328/0.363/0.363; flow 200..1500 at lr 1e-3 = 0.25/0.42/0.54/0.65/0.79/0.80/0.83, and 1200 steps at lr 2e-3 = 0.961.
+- Right-reason evidence for the regress blocker: the 8 level-1 clean codes are pairwise 3.72 apart, but the trained level-1 regression prediction lies 0.01 from their mean and is identical for all 8 rows; vq level-1 targets are 8 distinct ids (31, 12, 38, 10, 50, 6, 27, 43); teacher-forced decoding with the true chain codes is 1.000. Level 1 sees only `zhat_0 = 0` (SPEC 5.1), so only a stochastic head can carry the sequence id (`ce` categorical, `flow` multimodal).
+- Full suite: `.venv/Scripts/python.exe -m pytest -x -q`
+  `........................................................................ [ 58%]`
+  `......................................x.............                     [100%]`
+  `123 passed, 1 xfailed in 144.27s`  (EXIT=0)
 
 ### T3.4 sampler — exactly K backbone calls, shapes, seeded determinism
 - `pytest -q tests/test_generator_sample.py`
@@ -111,6 +127,12 @@ Rule: newest information wins. Rewrite sections; do not append history.
 2. **Keep the learned QKV/output projections and delete old smoke checkpoints.** All pre-existing `.pt` files under `results/` were deleted; only checkpoints from the current architecture remain (`results/tok_vq_t24`). Old Gemini/pre-QKV checkpoints are not loadable.
 3. **Level schedule uses the exact half-up integer formula** `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` (SPEC 2 / v1.2, F10). No Python `round`.
 
+## Files touched in T3.5
+- Code: `jncm/train_generator.py` (new: `load_tokenizer`, `build_generator`, `build_optimizer`, `compute_generator_loss`, `sample_and_score`, `run_diagnostics`, `train`, `build_decode_fn`, CLI), `jncm/config.py` (`GeneratorTrainConfig` with the SPEC 5.7 defaults, exposed as `generator.train`).
+- Configs: `configs/smoke.yaml`, `configs/tinystories_dev.yaml` (`generator.train` block; smoke uses batch 16 / 200 steps, dev uses the SPEC 5.7 values).
+- Tests: `tests/test_train_generator.py` (new: 12 fast tests + 3 slow acceptance arms).
+- Docs: `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (Q8) (SPEC.md not edited).
+
 ## Files touched in T3.4
 - Code: `jncm/generator/sample.py` (new: `sample_tokens`, the SPEC 5.6 coarse-to-fine loop), `jncm/generator/__init__.py` (exports `sample_tokens`, `LevelHead`).
 - Tests: `tests/test_generator_sample.py` (new, 14 tests).
@@ -144,7 +166,8 @@ Rule: newest information wins. Rewrite sections; do not append history.
 ## UNVERIFIED / not run
 - T0.2 real data prep (`python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test`): needs Hugging Face network access; not run. Packing/streaming tests pass.
 - T1.2 protocol gate on real data (`scripts/eval_data_row.py` with GPT-2-large): needs GPT-2-large weights and real TinyStories; not run. Mock test passes; `--help` verified.
-- T3.5 generator training: not implemented (no `train_generator.py`). T3.1–T3.4 are verified only by unit tests on eval-mode modules fed by a frozen, untrained tokenizer; end-to-end generator quality (and the T3.5 memorization acceptance) is unverified. Real-run head hyperparameters (SPEC 5.7) are untested at 768 wide / 90M params.
+- T3.5: verified only at CPU smoke scale and on the 600–1200 step memorization runs above. Real generator runs (H=768, 12 layers, batch 1024, 10k steps, about 1.3B positions, SPEC 5.7) are untested; Gen PPL was exercised with a fake scorer only (the real GPT-2 path is T1.2/T4.2 work). The `regress` memorization arm is structurally blocked (Q8).
+- T3.1–T3.4 were verified on eval-mode modules; T3.5 is the first end-to-end (tokenizer -> generator -> decode) check, but only on 8 fixed sequences.
 - G0a/G0/G1/G2: human cluster gates, not run.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 
@@ -156,7 +179,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 5. `git_sha.txt` now ends in `-dirty` when the working tree has uncommitted changes.
 6. T0.2 and T1.2 remain unchecked in TASKS because their real-data acceptance runs have not happened.
 7. `tok.sbatch` resumes from `results/<run_id>/ckpt/latest.pt`, which the trainer rewrites every `train.save_every` steps (5000 in the dev config), so a preempted job loses at most that many steps. Resume already does not restore the data iterator or RNG (item 2).
-8. The working tree carries two uncommitted edits from an earlier session (`tests/test_review_fixes.py`, `tests/test_train_tokenizer.py` pass an explicit temporary `data_dir` to `train`). They are unrelated to T3.1 and were left uncommitted; the suite passes with them in place.
+8. The working tree carries two uncommitted edits from an earlier session (`tests/test_review_fixes.py`, `tests/test_train_tokenizer.py` pass an explicit temporary `data_dir` to `train`). They are unrelated to T3.5 and were left uncommitted; the suite passes with them in place.
+9. T3.5 acceptance is blocked for `regress` (Q8): level 1 is conditioned on `zhat_0 = 0` only, so the deterministic regression head predicts the batch mean level-1 code and cannot emit 8 distinct sequences. The arm is `xfail(strict=True)`; T3.5 stays un-ticked pending a researcher decision.
+10. The slow acceptance takes about 2 minutes on CPU (mostly the flow arm), so `pytest -x -q` now takes about 2.5 minutes. `pytest -m "not slow"` is the fast loop.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
@@ -173,6 +198,11 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - SPEC 5.6 does not say whether the sampler switches modules to `eval()`. `sample_tokens` leaves train/eval modes untouched (the caller decides) and runs under `torch.no_grad()`; all draws take one explicit `torch.Generator`, drawn per level in order, so a seed fixes the whole sample.
 - Corruption is out-of-place and takes one explicit `torch.Generator` for all levels (draw order: per level, mask then replacement index), so a run is reproducible.
 - Overfit tests use batch size 1: level 1 is built from `zhat_0 = 0`, so every row of a level-1 batch sees the identical input and a per-position head can emit only one level-1 prediction (same for the regression floor). A perfect fit is only meaningful with one sequence; this is a property of SPEC 5.1/5.3, not a test shortcut.
+
+- T3.5 acceptance metric: `sample_tokens` draws independently per row, so with 8 fixed sequences each of the 8 samples is compared with its **best-matching** training sequence (token accuracy), and the test also requires >= 3 distinct matches so that a collapse onto one sequence cannot pass. This is the reading that makes the TASKS wording meaningful for a stochastic sampler; the 90/90/80 thresholds are unchanged (Q8 covers the regress blocker).
+- SPEC 5.7's generator defaults live in `generator.train` (lr 3e-4 -> 3e-5, wd 0.1, warmup 500, batch 1024, 10k steps), separate from the tokenizer's SPEC 4.4 `train` block. `smoke.yaml` overrides them to batch 16 / 200 steps so CPU smoke runs stay short; tests override them further.
+- `train_generator` reads `tok_positions` from the tokenizer checkpoint as the curve offset for SPEC 6.2; `gen_positions = step * batch * L` and `total_positions` is their sum. A resume keeps the checkpoint's `tok_positions` and recomputes `gen_positions` from the step (same batch size assumed, as in the tokenizer trainer).
+- `train_generator` requires the head/variant pairing of SPEC 5.3 (`ce` with vq, `regress`/`flow` with noisy) and fails loudly otherwise; the config does not guess.
 
 ## Human must fill / do
 - Run `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` on a login node (internet) to satisfy T0.2.
@@ -210,7 +240,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. T3.5 (`jncm/train_generator.py`: frozen tokenizer, all levels per pass, sampling via `sample_tokens` + Gen PPL hook, position accounting, resume; call `corrupt_codes(codes, cfg.generator.corrupt, generator=..., quantizer=cfg.tokenizer.quantizer)`). Remember to call `tokenizer.eval()`, `backbone.eval()`, `head.eval()` before sampling.
+1. Q8: decide the `regress` memorization protocol (one sequence, teacher-forced level 1, an architectural change to SPEC 5.1, or accept the ~0.36 ceiling), then tick T3.5. The trainer is ready to run: `python -m jncm.train_generator --config configs/smoke.yaml --tokenizer results/tok_vq_t24/ckpt/latest.pt --steps 50 --run_id gen_vq_t35`; `--gen_ppl` adds the GPT-2 scorer, and `sample_and_score` already switches the modules to eval and restores their modes.
 2. Finish T4.1 (`scripts/slurm/{gen,eval}.sbatch`) once T3.5/T4.2 exist.
 3. T4.2 (`scripts/run_eval.py`, `scripts/plot_curves.py`).
 

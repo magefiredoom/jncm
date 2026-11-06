@@ -51,7 +51,7 @@ Work on the first unchecked task. One task per session unless told otherwise.
 - [x] **T3.4 Sampler.** `generator/sample.py` per SPEC 5.6.
   Accept tests: exactly K backbone calls (forward hook), correct shapes, token ids in [0, V), same seed gives same samples. — PASSED 2026-11-06 (`tests/test_generator_sample.py`: 14 tests; hook count K at B=1/3 and K=1/4, ids in range for ce/regress/flow, seeded determinism, sampler equals the manual SPEC 5.6 loop; mutant probes (no accumulation, extra backbone call) each kill 4 tests; full suite 109 passed).
 - [ ] **T3.5 Generator training.** `jncm/train_generator.py` per SPEC 5.5 to 5.7: frozen tokenizer checkpoint, all levels in one pass, periodic sampling plus Gen PPL hook, position accounting, resume.
-  Accept (`pytest -m slow`, CPU): memorization test. Overfit the tokenizer on 8 fixed sequences, then the generator; sampled outputs match the training sequences at >= 90% token accuracy for `ce` and `regress`, >= 80% for `flow`.
+  Accept (`pytest -m slow`, CPU): memorization test. Overfit the tokenizer on 8 fixed sequences, then the generator; sampled outputs match the training sequences at >= 90% token accuracy for `ce` and `regress`, >= 80% for `flow`. — PARTIAL 2026-11-06: trainer, SPEC 5.7 config and 12 fast tests pass; slow acceptance gives `ce` 1.000 and `flow` 0.961 against 0.90/0.80, but `regress` plateaus at 0.363 because level 1 is conditioned on `zhat_0 = 0` only (Q8). The regress arm is xfail(strict) and the task is **not ticked** pending a researcher decision.
 
 ## M4 — Experiment infrastructure
 

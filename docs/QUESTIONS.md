@@ -32,6 +32,26 @@ These are recorded as ASSUMPTIONs in STATE.md; none changes a SPEC decision.
 ## Q7 — Sampler module mode and no_grad (ASSUMPTION, non-blocking)
 SPEC 5.6 gives the sampling loop but not the module state it runs in. `sample_tokens` leaves train/eval modes untouched (a sampler that flips modes would surprise a training loop) and wraps the loop in `torch.no_grad()`; callers that care about dropout/init-noise semantics must call `.eval()` first. All randomness (head sampling, flow start, channel noise) consumes one explicit `torch.Generator`, per level in order, so `Generator().manual_seed(s)` reproduces a whole sample. Recorded as an ASSUMPTION in STATE.md; SPEC.md not edited.
 
+## Q8 — T3.5 memorization acceptance is unreachable for `regress` (OPEN, blocks ticking T3.5)
+TASKS T3.5: "Overfit the tokenizer on 8 fixed sequences, then the generator; sampled outputs match the training sequences at >= 90% token accuracy for `ce` and `regress`, >= 80% for `flow`."
+
+Measured on CPU smoke scale (8 fixed sequences, L=32, K=4, H=64/2 layers, `corrupt.mode=none`, 12 fast + 3 slow tests in `tests/test_train_generator.py`): `ce` 1.000, `flow` 0.961, `regress` 0.363 (plateau at 200/400/600/800/1000 steps: 0.24/0.34/0.33/0.36/0.36).
+
+Why `regress` cannot reach it, with the numbers from this session:
+- SPEC 5.1 makes the level-1 input depend on `zhat_0 = 0` only, so every sequence in a batch has the same level-1 hidden state (1 position); the only sequence-identifying information the generator can ever carry is the level-1 code it *samples*.
+- The tokenizer's level-1 codes for the 8 sequences are 8 distinct values (vq ids 31, 12, 38, 10, 50, 6, 27, 43; noisy clean codes pairwise 3.72 apart), so the sequences really do differ at level 1.
+- `RegressHead` is deterministic plus iid channel noise, so its MSE optimum is the batch mean level-1 code: the trained prediction sits 0.01 from the mean and is identical for all 8 rows. One sampled sequence only, or a blend; never 8 distinct sequences. Teacher-forced decoding with the true chain codes is 1.000, so this is the head/conditioning, not the tokenizer or the decoder.
+- `ce` escapes by categorical sampling (a discrete id) and `flow` by sampling a multimodal level-1 distribution. That is precisely the discrete-vs-continuous distinction the project studies.
+- A swap-corrupted run is worse for memorization (`ce` 1.000 -> 0.277), because swapping at level 1 replaces the only identifying code.
+
+Current state: the test keeps the TASKS thresholds unchanged; the `regress` arm is `xfail(strict=True)` with this reason, so it runs, reports, and fails loudly if the architecture changes. TASKS T3.5 is **not** ticked.
+
+Options for the researcher (pick one; none is implemented):
+1. Run the `regress` memorization arm with **one** sequence (the level-1 ambiguity disappears) and keep 8 sequences for `ce`/`flow`.
+2. Change the protocol so the level-1 code is teacher-forced for the continuous heads, i.e. measure memorization of levels 2..K given the true level 1.
+3. Amend SPEC 5.1 to feed level 1 some sequence-identifying context (e.g. a learned per-sequence start token or a prefix), which changes the architecture for all heads.
+4. Accept a lower `regress` number and record it as the `regress` capability ceiling (~0.36 at this scale) rather than a pass.
+
 ## Q5 — Remaining F9 minor items (open, non-blocking)
 - `GPT2Scorer.score_sample` still scores one text at a time. Batching is deferred to T4.2, as the review recommends.
 - Resume restores model and optimizer (including the new decay/no-decay groups) but not the data iterator or RNG. Acceptable for dev; same batch size and seed required for reproducible resume.

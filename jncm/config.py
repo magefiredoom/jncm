@@ -38,6 +38,22 @@ class CorruptionConfig:
 
 
 @dataclass
+class GeneratorTrainConfig:
+    """Generator training defaults (SPEC 5.7)."""
+
+    lr: float = 3e-4
+    min_lr: float = 3e-5
+    betas: list[float] = field(default_factory=lambda: [0.9, 0.95])
+    weight_decay: float = 0.1
+    warmup_steps: int = 500
+    max_steps: int = 10000
+    grad_clip: float = 1.0
+    batch_size: int = 1024
+    eval_every: int = 500
+    save_every: int = 5000
+
+
+@dataclass
 class GeneratorConfig:
     H: int = 128
     n_layers: int = 2
@@ -52,6 +68,7 @@ class GeneratorConfig:
     regress_cosine: bool = False
     alpha: float = 0.0
     corrupt: CorruptionConfig = field(default_factory=CorruptionConfig)
+    train: GeneratorTrainConfig = field(default_factory=GeneratorTrainConfig)
 
 
 @dataclass
