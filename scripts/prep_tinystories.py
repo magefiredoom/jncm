@@ -42,6 +42,57 @@ def pack_stories(
     return flat.reshape(num_windows, seq_len)
 
 
+class WindowPacker:
+    """Streaming equivalent of pack_stories(): memory is O(chunk), not O(dataset)."""
+
+    def __init__(self, eos_id: int, seq_len: int) -> None:
+        self.eos_id = eos_id
+        self.seq_len = seq_len
+        self._tail = np.empty(0, dtype=np.uint16)
+
+    def add(self, stories: list[list[int]]) -> np.ndarray:
+        """Append tokenized stories and return all newly completed windows."""
+        parts = [self._tail]
+        for story in stories:
+            if len(story) == 0:
+                continue
+            arr = np.asarray(story, dtype=np.uint16)
+            parts.append(arr)
+            if arr[-1] != self.eos_id:
+                parts.append(np.array([self.eos_id], dtype=np.uint16))
+        flat = np.concatenate(parts)
+        n = len(flat) // self.seq_len
+        self._tail = flat[n * self.seq_len :].copy()
+        return flat[: n * self.seq_len].reshape(n, self.seq_len)
+
+    @property
+    def dropped_tokens(self) -> int:
+        """Tokens carried in the unfinished tail (dropped at end of split)."""
+        return int(len(self._tail))
+
+
+def write_packed_split(
+    split: Any,
+    tokenizer: Any,
+    out_path: Path,
+    eos_id: int,
+    seq_len: int,
+    chunk_size: int = 20_000,
+) -> tuple[int, int]:
+    """Tokenize and pack one split incrementally; return (windows, dropped_tokens)."""
+    packer = WindowPacker(eos_id, seq_len)
+    n_windows = 0
+    with open(out_path, "wb") as f:
+        for start in range(0, len(split), chunk_size):
+            end = min(start + chunk_size, len(split))
+            texts = [split[i]["text"] for i in range(start, end)]
+            encodings = tokenizer.encode_batch(texts)
+            windows = packer.add([enc.ids for enc in encodings])
+            windows.tofile(f)
+            n_windows += int(windows.shape[0])
+    return n_windows, packer.dropped_tokens
+
+
 def train_bpe_tokenizer(
     story_texts: list[str],
     vocab_size: int,
@@ -119,30 +170,26 @@ def main() -> None:
     eos_id = tokenizer.token_to_id("<eos>")
     print(f"Tokenizer loaded: pad_id={pad_id}, eos_id={eos_id}")
 
-    def tokenize_stories(texts: list[str]) -> list[list[int]]:
-        encodings = tokenizer.encode_batch(texts)
-        return [enc.ids for enc in encodings]
-
-    print("Tokenizing train split...")
-    train_texts = [item["text"] for item in train_split]
-    train_tokens = tokenize_stories(train_texts)
-    train_windows = pack_stories(train_tokens, eos_id=eos_id, seq_len=args.seq_len)
-
-    print("Tokenizing val split...")
-    val_texts = [item["text"] for item in val_split]
-    val_tokens = tokenize_stories(val_texts)
-    val_windows = pack_stories(val_tokens, eos_id=eos_id, seq_len=args.seq_len)
-
     train_bin = out_dir / "train.bin"
     val_bin = out_dir / "val.bin"
-    train_windows.tofile(train_bin)
-    val_windows.tofile(val_bin)
+
+    print("Tokenizing train split (streaming)...")
+    train_windows, train_dropped = write_packed_split(
+        train_split, tokenizer, train_bin, eos_id, args.seq_len
+    )
+
+    print("Tokenizing val split (streaming)...")
+    val_windows, val_dropped = write_packed_split(
+        val_split, tokenizer, val_bin, eos_id, args.seq_len
+    )
 
     meta = {
-        "train_windows": int(train_windows.shape[0]),
-        "train_tokens": int(train_windows.size),
-        "val_windows": int(val_windows.shape[0]),
-        "val_tokens": int(val_windows.size),
+        "train_windows": train_windows,
+        "train_tokens": train_windows * args.seq_len,
+        "train_dropped_tokens": train_dropped,
+        "val_windows": val_windows,
+        "val_tokens": val_windows * args.seq_len,
+        "val_dropped_tokens": val_dropped,
         "V": int(tokenizer.get_vocab_size()),
         "L": args.seq_len,
         "pad_id": pad_id,
