@@ -32,6 +32,7 @@ generator:
   n_rep: 4
   renorm_pred: true
   add_channel_noise: true
+  regress_cosine: false
   alpha: 0.0
   corrupt:
     mode: "none"

@@ -49,6 +49,7 @@ class GeneratorConfig:
     n_rep: int = 4
     renorm_pred: bool = True
     add_channel_noise: bool = True
+    regress_cosine: bool = False
     alpha: float = 0.0
     corrupt: CorruptionConfig = field(default_factory=CorruptionConfig)
 

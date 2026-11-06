@@ -1,18 +1,29 @@
 # STATE — jncm
 
-Last updated: 2026-11-06 (T3.1 backbone done: no-leak + padding-invariance tests; 73 tests pass on CPU)
+Last updated: 2026-11-06 (T3.2 heads and losses done; 86 tests pass on CPU)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 code complete; **T2.4 complete**; **T3.1 complete** (`jncm/generator/backbone.py`); **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
-- Last completed task: T3.1 (level-block backbone, SPEC 5.1/5.2, acceptance tests a–c).
-- Next task: T3.2 (heads and losses). Not started.
+- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2 complete** (`jncm/generator/{backbone,heads}.py`); **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
+- Last completed task: T3.2 (heads `ce`/`regress`/`flow` + SPEC 5.5 loss weighting, acceptance: overfit, bimodal toy, determinism).
+- Next task: T3.3 (corruption, SPEC 5.4). Not started.
 - T4.1 is deliberately **not** ticked: `scripts/slurm/{gen,eval}.sbatch` do not exist yet.
 - T0.2 real data prep and T1.2 real-data protocol gate remain human-run; their CPU tests pass.
 - Gate G0a is next after T1.2 (cluster, human).
 
 ## VERIFIED (command + last lines of output)
+
+### T3.2 heads and losses — ce/regress overfit, flow bimodal toy, determinism
+- `pytest -q tests/test_generator_heads.py`
+  `.............                                                            [100%]`
+  `13 passed in 11.82s`
+  Covers (a) `ce` overfits a fixed batch through the real frozen-tokenizer → backbone → head path: all 66 code indices at all 4 levels predicted exactly, total loss < 1e-2; (b) `regress` overfits the same path to total MSE 4.62e-4 (per level <= 3.1e-4), cosine >= 0.99; (c) `flow` learns the 2-D two-Gaussian toy (modes +-(1,1), std 0.1): 97.3% of 512 samples within 0.5 of a mode and a 0.453 / 0.547 split (thresholds 35% each, 80% near a mode); (d) seeded determinism for all three samplers (same generator → `torch.equal`, different seed → different samples) and for the flow training loss; (e) `ce` loss equals `F.cross_entropy` of the head logits, `regress` cosine option matches `1 - cos`; (f) `regress` renorm gives per-position unit variance; (g) SPEC 5.5 weights (`alpha=0` position-weighted, `alpha=1` equal per level, `sum_k w_k l_k = 1`) and the factory's argument validation.
+- Overfit-batch sizing probe (batch size 1 for a reason, see ASSUMPTIONs): `H=32 L=1 steps=1200 lr=0.005: loss=4.62e-04 per=[1e-06, 0.000107, 0.000308, 4.7e-05] t=4.8s`; `H=64 L=2 steps=600: loss=1.72e-02`. Toy probe at 600 steps: `loss 0.8926 frac+ 0.453 near<0.5 0.973 xmean [-0.069, -0.07] xstd [0.951, 0.957]` (the two-mode target has an irreducible ambiguity floor near 0.86, so the toy test checks bimodality and a 40% loss drop, not a small absolute loss).
+- Full suite from repo root: `pytest -x -q`
+  `........................................................................ [ 83%]`
+  `..............                                                           [100%]`
+  `86 passed in 16.56s`  (EXIT=0)
 
 ### T3.1 backbone — no-leak, padding invariance, shapes
 - `pytest -q tests/test_generator_backbone.py`
@@ -72,6 +83,12 @@ Rule: newest information wins. Rewrite sections; do not append history.
 2. **Keep the learned QKV/output projections and delete old smoke checkpoints.** All pre-existing `.pt` files under `results/` were deleted; only checkpoints from the current architecture remain (`results/tok_vq_t24`). Old Gemini/pre-QKV checkpoints are not loadable.
 3. **Level schedule uses the exact half-up integer formula** `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` (SPEC 2 / v1.2, F10). No Python `round`.
 
+## Files touched in T3.2
+- Code: `jncm/generator/heads.py` (new: `CEHead`, `RegressHead`, `FlowHead`/`FlowMLP`, `SinusoidalTimeEmbedding`, `build_head`, `level_weights`, `weighted_total`, `sample_codes`), `jncm/generator/__init__.py` (exports), `jncm/config.py` (`generator.regress_cosine`).
+- Configs: `configs/smoke.yaml`, `configs/tinystories_dev.yaml` (`regress_cosine: false`).
+- Tests: `tests/test_generator_heads.py` (new, 13 tests).
+- Docs: `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (Q6) (SPEC.md not edited).
+
 ## Files touched in T3.1
 - Code: `jncm/generator/backbone.py` (was untracked scratch from an earlier session; reviewed, no behavioural change needed), `jncm/generator/__init__.py`.
 - Tests: `tests/test_generator_backbone.py` (new, 9 tests).
@@ -89,7 +106,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 ## UNVERIFIED / not run
 - T0.2 real data prep (`python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test`): needs Hugging Face network access; not run. Packing/streaming tests pass.
 - T1.2 protocol gate on real data (`scripts/eval_data_row.py` with GPT-2-large): needs GPT-2-large weights and real TinyStories; not run. Mock test passes; `--help` verified.
-- T3.2–T3.5 generator: not implemented. T3.1 is verified only by unit tests on the eval-mode module — no generator training, head, corruption or sampling run has exercised it yet, so generator behaviour as a whole is unverified.
+- T3.3–T3.5 generator: not implemented. T3.1/T3.2 are verified only by unit tests on eval-mode modules fed by a frozen, untrained tokenizer; no `train_generator.py` run, corruption or sampler exists yet, so generator behaviour as a whole is unverified. Real-run head hyperparameters (SPEC 5.7) are untested at 768 wide / 90M params.
 - G0a/G0/G1/G2: human cluster gates, not run.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 
@@ -110,6 +127,10 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - SPEC v1.2 resolves the schedule tie-breaking ambiguity: exact half-up integer arithmetic.
 - SPEC 5.1 says "64 log-spaced frequencies" without a range: SinPos uses 64 geometric frequencies from 1 to 1e-4 cycles per normalized position, applies 2*pi*p_i*freq, concatenates sin and cos (128 features), and projects linearly to H.
 - SPEC 5.2's "dropout 0.1" is applied as residual dropout (after the attention output projection and after the MLP), as in the tokenizer blocks; attention-internal dropout is 0.
+- SPEC 5.3 "3 residual blocks (Linear 512 -> 512, SiLU)" is implemented as `x + SiLU(Linear(x))`; the time embedding is 64 log-spaced frequencies from 1 to 1e-4 cycles over `2*pi*t` for t in [0, 1], sin and cos concatenated to 128 dims (same convention as the backbone positions).
+- SPEC 5.3's regress "option `cosine`" is the config flag `generator.regress_cosine` (default false = MSE). `FlowHead` widths follow SPEC (hidden 512, 3 blocks, 128 time dims) and are constructor arguments only so tests can shrink them.
+- Head `loss` returns per-level means plus their sum; SPEC 5.5 weighting is `weighted_total(losses, schedule, alpha)` = `sum_k w_k * l_k * mean_k`, exact for the SPEC formula with per-position losses.
+- Overfit tests use batch size 1: level 1 is built from `zhat_0 = 0`, so every row of a level-1 batch sees the identical input and a per-position head can emit only one level-1 prediction (same for the regression floor). A perfect fit is only meaningful with one sequence; this is a property of SPEC 5.1/5.3, not a test shortcut.
 
 ## Human must fill / do
 - Run `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` on a login node (internet) to satisfy T0.2.
@@ -147,9 +168,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. T3.2 (`jncm/generator/heads.py`: ce, regress, and flow matching heads on the T3.1 level outputs).
-2. T3.3 (`jncm/generator/corruption.py`: none/swap/noise per SPEC 5.4).
-3. T3.4 (`jncm/generator/sample.py`: exactly K backbone calls per batch).
+1. T3.3 (`jncm/generator/corruption.py`: none/swap/noise per SPEC 5.4).
+2. T3.4 (`jncm/generator/sample.py`: exactly K backbone calls per batch, heads from T3.2).
+3. T3.5 (`jncm/train_generator.py`: frozen tokenizer, all levels per pass, sampling + Gen PPL hook, position accounting, resume).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - G0a: not run

@@ -21,6 +21,14 @@ SPEC 4.1/5.2 say "pre-LN transformer block" and now explicitly require learned q
 SPEC 3 forbids a silent fallback. `setup_data` now raises `FileNotFoundError` unless real memmaps exist or synthetic data is explicitly allowed; `meta.json` L/V mismatches raise `ValueError`; every metrics record carries `data_source`.
 **Decision:** use `allow_synthetic=True` / `--allow_synthetic` only for smoke tests; `smoke.yaml` keeps `train.allow_synthetic_data: true`.
 
+## Q6 — T3.2 head details SPEC 5.3 leaves open (ASSUMPTION, non-blocking)
+These are recorded as ASSUMPTIONs in STATE.md; none changes a SPEC decision.
+- Flow residual block: SPEC says "3 residual blocks (Linear 512 -> 512, SiLU)". Implemented as `x + SiLU(Linear(x))` (one linear per block, nonlinear, residual). A two-linear bottleneck/pre-LN form is the alternative if the researcher prefers.
+- Time embedding: "sinusoidal, 128 dims" without a range. Implemented as 64 log-spaced frequencies from 1 to 1e-4 cycles over `2*pi*t`, t in [0, 1], sin and cos concatenated — the same convention as the backbone positions (5.1).
+- Regress `cosine` option: SPEC names the option but not a config key. Added `generator.regress_cosine: false` (false = MSE).
+- Loss granularity: each head's `loss` returns per-level means; SPEC 5.5's `sum_k w_k * sum_i loss_{k,i}` is `weighted_total` = `sum_k w_k * l_k * mean_k`, which is exact for per-position losses (`alpha=0` gives the position-weighted mean, `alpha=1` the equal-per-level mean; both tested).
+- Overfit acceptance batches use B = 1: at level 1 the input comes from `zhat_0 = 0`, so all rows of a level-1 batch are identical and a per-position head can predict only one level-1 code (likewise the regression floor is the variance of the level-1 targets). A 100% batch fit requires one sequence; that is a property of SPEC 5.1/5.3, not a weakened test.
+
 ## Q5 — Remaining F9 minor items (open, non-blocking)
 - `GPT2Scorer.score_sample` still scores one text at a time. Batching is deferred to T4.2, as the review recommends.
 - Resume restores model and optimizer (including the new decay/no-decay groups) but not the data iterator or RNG. Acceptable for dev; same batch size and seed required for reproducible resume.
