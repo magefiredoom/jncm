@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
+import json
 import math
 from pathlib import Path
 import subprocess
@@ -49,9 +50,13 @@ def setup_data(
     cfg: Config,
     data_dir: str | Path = "data/tinystories",
     temp_dir: Path | None = None,
+    allow_synthetic: bool | None = None,
 ) -> tuple[MemmapDataset, MemmapDataset]:
     """
-    Load training and validation datasets, creating synthetic data if real data is missing.
+    Load training and validation datasets.
+
+    Real memmaps win whenever both exist. Synthetic data is created only when
+    `allow_synthetic` (or cfg.train.allow_synthetic_data when None) is true.
     """
     d_path = Path(data_dir)
     train_bin = d_path / "train.bin"
@@ -60,15 +65,28 @@ def setup_data(
     # Use real datasets if present. Never silently substitute random data on a
     # real run: synthetic fallback must be explicitly enabled in the config.
     if train_bin.exists() and val_bin.exists():
+        meta_path = d_path / "meta.json"
+        if meta_path.exists():
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if int(meta.get("L", cfg.L)) != cfg.L:
+                raise ValueError(
+                    f"meta.json L={meta.get('L')} does not match config L={cfg.L}"
+                )
+            if int(meta.get("V", cfg.V)) != cfg.V:
+                raise ValueError(
+                    f"meta.json V={meta.get('V')} does not match config V={cfg.V}"
+                )
         train_ds = MemmapDataset(train_bin, seq_len=cfg.L)
         val_ds = MemmapDataset(val_bin, seq_len=cfg.L)
         return train_ds, val_ds
 
-    if not cfg.train.allow_synthetic_data:
+    allowed = cfg.train.allow_synthetic_data if allow_synthetic is None else allow_synthetic
+    if not allowed:
         raise FileNotFoundError(
             f"Prepared data not found at {d_path} (need train.bin and val.bin). "
-            "Run scripts/prep_tinystories.py on a login node, or set "
-            "train.allow_synthetic_data=true for a synthetic smoke run."
+            "Run scripts/prep_tinystories.py on a login node, or pass "
+            "--allow_synthetic for a synthetic smoke run."
         )
 
     # Create synthetic dataset for CPU smoke tests and self-contained runs
@@ -88,6 +106,14 @@ def setup_data(
     return MemmapDataset(syn_train, seq_len=cfg.L), MemmapDataset(syn_val, seq_len=cfg.L)
 
 
+def detect_data_source(data_dir: str | Path = "data/tinystories") -> str:
+    """Return 'real' when both prepared memmaps exist, else 'synthetic'."""
+    d_path = Path(data_dir)
+    if (d_path / "train.bin").exists() and (d_path / "val.bin").exists():
+        return "real"
+    return "synthetic"
+
+
 def run_diagnostics(
     model: MultiscaleTokenizer,
     val_batch: torch.Tensor,
@@ -96,6 +122,7 @@ def run_diagnostics(
     cfg: Config,
     loss_val: float,
     current_lr: float,
+    data_source: str = "unknown",
 ) -> dict[str, Any]:
     """
     Evaluate full hierarchy on fixed held-out batch without nested dropout (SPEC 4.5).
@@ -117,6 +144,7 @@ def run_diagnostics(
             "step": step,
             "train_loss": float(loss_val),
             "lr": float(current_lr),
+            "data_source": data_source,
             "acc_cum": acc_cum,
             "acc_full": float(acc_full),
             "tok_positions": tok_positions,
@@ -159,6 +187,8 @@ def train(
     run_id: str | None = None,
     resume_path: str | Path | None = None,
     results_dir: str | Path = "results",
+    allow_synthetic: bool | None = None,
+    data_dir: str | Path = "data/tinystories",
 ) -> Path:
     """Execute tokenizer training loop."""
     seed_everything(cfg.seed)
@@ -186,7 +216,12 @@ def train(
     logger = JSONLLogger(run_dir / "metrics.jsonl")
 
     # Data
-    train_ds, val_ds = setup_data(cfg)
+    data_source = detect_data_source(data_dir)
+    train_ds, val_ds = setup_data(
+        cfg,
+        data_dir=data_dir,
+        allow_synthetic=allow_synthetic,
+    )
     train_loader = InfiniteBatchIterator(
         train_ds, batch_size=cfg.train.batch_size, seed=cfg.seed, shuffle=True
     )
@@ -266,6 +301,7 @@ def train(
                 cfg=cfg,
                 loss_val=recent_loss,
                 current_lr=curr_lr,
+                data_source=data_source,
             )
             logger.log(metrics)
             print(
@@ -298,10 +334,21 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--run_id", type=str, default=None)
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument(
+        "--allow_synthetic",
+        action="store_true",
+        help="Explicitly allow random synthetic data when real memmaps are missing",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config, overrides=args.overrides)
-    train(cfg=cfg, max_steps=args.steps, run_id=args.run_id, resume_path=args.resume)
+    train(
+        cfg=cfg,
+        max_steps=args.steps,
+        run_id=args.run_id,
+        resume_path=args.resume,
+        allow_synthetic=True if args.allow_synthetic else None,
+    )
 
 
 if __name__ == "__main__":
