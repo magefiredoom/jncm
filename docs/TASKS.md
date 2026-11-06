@@ -46,8 +46,8 @@ Work on the first unchecked task. One task per session unless told otherwise.
   Accept tests: (a) **no leak**: with `eval()` and a fixed seed, two inputs that differ only in codes of levels >= k give identical level-k outputs; (b) padding invariance: changing values at padded positions does not change valid outputs; (c) shapes. — PASSED 2026-11-06 (`tests/test_generator_backbone.py`: 9 tests, both `vq` and `noisy`; leak and dropped-mask mutants each fail the suite; full suite 73 passed).
 - [x] **T3.2 Heads and losses.** `ce`, `regress`, `flow` per SPEC 5.3.
   Accept tests: ce and regress overfit a fixed batch; flow learns a 2-D toy (mixture of two Gaussians at +-1, std 0.1) and its samples are bimodal (at least 35% in each mode); seeded determinism. — PASSED 2026-11-06 (`tests/test_generator_heads.py`: 13 tests; ce fits 66/66 indices, regress MSE 4.6e-4, toy 0.45/0.55 split with 97% near a mode; full suite 86 passed).
-- [ ] **T3.3 Corruption.** `generator/corruption.py` per SPEC 5.4.
-  Accept tests: empirical swap rate matches p_j within 0.03; targets are untouched; `none` is the identity.
+- [x] **T3.3 Corruption.** `generator/corruption.py` per SPEC 5.4.
+  Accept tests: empirical swap rate matches p_j within 0.03; targets are untouched; `none` is the identity. — PASSED 2026-11-06 (`tests/test_generator_corruption.py`: 9 tests; observed 0.816/0.601/0.396/0.196 vs 0.8/0.6/0.4/0.2, noise std 0.500/0.366/0.234/0.100 vs 0.5/0.3667/0.2333/0.1; full suite 95 passed).
 - [ ] **T3.4 Sampler.** `generator/sample.py` per SPEC 5.6.
   Accept tests: exactly K backbone calls (forward hook), correct shapes, token ids in [0, V), same seed gives same samples.
 - [ ] **T3.5 Generator training.** `jncm/train_generator.py` per SPEC 5.5 to 5.7: frozen tokenizer checkpoint, all levels in one pass, periodic sampling plus Gen PPL hook, position accounting, resume.

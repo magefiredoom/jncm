@@ -1,18 +1,33 @@
 # STATE — jncm
 
-Last updated: 2026-11-06 (T3.2 heads and losses done; 86 tests pass on CPU)
+Last updated: 2026-11-06 (T3.3 corruption done; 95 tests pass on CPU)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2 complete** (`jncm/generator/{backbone,heads}.py`); **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
-- Last completed task: T3.2 (heads `ce`/`regress`/`flow` + SPEC 5.5 loss weighting, acceptance: overfit, bimodal toy, determinism).
-- Next task: T3.3 (corruption, SPEC 5.4). Not started.
+- Milestone / task in progress: M0–M2 code complete; **T2.4, T3.1, T3.2, T3.3 complete** (`jncm/generator/{backbone,heads,corruption}.py`); **T4.1 partial** — `scripts/slurm/tok.sbatch` and `prep.sbatch` only, gen/eval wait for T3.5/T4.2.
+- Last completed task: T3.3 (corruption `none`/`swap`/`noise` per SPEC 5.4; acceptance: swap rate within 0.03, targets untouched, `none` identity).
+- Next task: T3.4 (`generator/sample.py`, SPEC 5.6). Not started.
 - T4.1 is deliberately **not** ticked: `scripts/slurm/{gen,eval}.sbatch` do not exist yet.
 - T0.2 real data prep and T1.2 real-data protocol gate remain human-run; their CPU tests pass.
 - Gate G0a is next after T1.2 (cluster, human).
 
 ## VERIFIED (command + last lines of output)
+
+### T3.3 corruption — swap rate, clean targets, identity `none`
+- `pytest -q tests/test_generator_corruption.py`
+  `.........                                                                [100%]`
+  `9 passed in 2.00s`
+  Covers (a) empirical swap rate per level within 0.03 of `p_j` (levels 1/11/22/32, B=1024); (b) every swapped code is another (batch, position) of its own level, and at rate 1.0 nothing stays put; (c) targets untouched through the real frozen tokenizer (and `enc.codes` unmodified; the corrupted conditioning does change the backbone output, so the check is not vacuous); (d) `mode="none"` returns the identical tensors; (e) seeded determinism plus out-of-place behaviour; (f) `noise` empirical std/mean per level; (g) `noise` rejected unless `quantizer="noisy"` and rejected for integer codes; (h) `linear_schedule` endpoints (0.5/0.1 for noise), wrong rate count, rate out of [0,1] and negative sigma raise.
+- Probe used for the numbers above (B=1024, seeds 3/11, schedule [1, 11, 22, 32]):
+  `swap target [0.8, 0.6, 0.4, 0.2]`
+  `swap observed [0.8164, 0.6009, 0.3957, 0.1959]`
+  `noise target [0.5, 0.3667, 0.2333, 0.1]`
+  `noise observed std [0.5001, 0.3662, 0.2338, 0.1001]`
+- Full suite from repo root: `.venv/Scripts/python.exe -m pytest -x -q`
+  `........................................................................ [ 75%]`
+  `.......................                                                  [100%]`
+  `95 passed in 16.90s`  (EXIT=0)
 
 ### T3.2 heads and losses — ce/regress overfit, flow bimodal toy, determinism
 - `pytest -q tests/test_generator_heads.py`
@@ -83,6 +98,11 @@ Rule: newest information wins. Rewrite sections; do not append history.
 2. **Keep the learned QKV/output projections and delete old smoke checkpoints.** All pre-existing `.pt` files under `results/` were deleted; only checkpoints from the current architecture remain (`results/tok_vq_t24`). Old Gemini/pre-QKV checkpoints are not loadable.
 3. **Level schedule uses the exact half-up integer formula** `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` (SPEC 2 / v1.2, F10). No Python `round`.
 
+## Files touched in T3.3
+- Code: `jncm/generator/corruption.py` (new: `linear_schedule`, `swap_codes`, `add_code_noise`, `corrupt_codes`, `MODES`), `jncm/generator/__init__.py` (exports).
+- Tests: `tests/test_generator_corruption.py` (new, 9 tests).
+- Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited; no docs/QUESTIONS.md entry needed — the three ASSUMPTIONs below are non-blocking).
+
 ## Files touched in T3.2
 - Code: `jncm/generator/heads.py` (new: `CEHead`, `RegressHead`, `FlowHead`/`FlowMLP`, `SinusoidalTimeEmbedding`, `build_head`, `level_weights`, `weighted_total`, `sample_codes`), `jncm/generator/__init__.py` (exports), `jncm/config.py` (`generator.regress_cosine`).
 - Configs: `configs/smoke.yaml`, `configs/tinystories_dev.yaml` (`regress_cosine: false`).
@@ -106,7 +126,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 ## UNVERIFIED / not run
 - T0.2 real data prep (`python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test`): needs Hugging Face network access; not run. Packing/streaming tests pass.
 - T1.2 protocol gate on real data (`scripts/eval_data_row.py` with GPT-2-large): needs GPT-2-large weights and real TinyStories; not run. Mock test passes; `--help` verified.
-- T3.3–T3.5 generator: not implemented. T3.1/T3.2 are verified only by unit tests on eval-mode modules fed by a frozen, untrained tokenizer; no `train_generator.py` run, corruption or sampler exists yet, so generator behaviour as a whole is unverified. Real-run head hyperparameters (SPEC 5.7) are untested at 768 wide / 90M params.
+- T3.4–T3.5 generator: not implemented (no sampler, no `train_generator.py`). T3.1–T3.3 are verified only by unit tests on eval-mode modules fed by a frozen, untrained tokenizer; generator behaviour as a whole is unverified. Real-run head hyperparameters (SPEC 5.7) are untested at 768 wide / 90M params.
 - G0a/G0/G1/G2: human cluster gates, not run.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 
@@ -130,6 +150,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - SPEC 5.3 "3 residual blocks (Linear 512 -> 512, SiLU)" is implemented as `x + SiLU(Linear(x))`; the time embedding is 64 log-spaced frequencies from 1 to 1e-4 cycles over `2*pi*t` for t in [0, 1], sin and cos concatenated to 128 dims (same convention as the backbone positions).
 - SPEC 5.3's regress "option `cosine`" is the config flag `generator.regress_cosine` (default false = MSE). `FlowHead` widths follow SPEC (hidden 512, 3 blocks, 128 time dims) and are constructor arguments only so tests can shrink them.
 - Head `loss` returns per-level means plus their sum; SPEC 5.5 weighting is `weighted_total(losses, schedule, alpha)` = `sum_k w_k * l_k * mean_k`, exact for the SPEC formula with per-position losses.
+- SPEC 5.4 corruption: `corrupt.mode="noise"` requires `quantizer="noisy"` in `corrupt_codes` (missing/other variant raises, so the vq baseline cannot silently get channel noise).
+- SPEC 5.4 swap: a level with fewer than two (batch, position) slots (e.g. B=1, l_1=1) has no "other" position to draw from and is left unchanged. `linear_schedule(K=1)` returns `[first]`, since the single level is the first level.
+- Corruption is out-of-place and takes one explicit `torch.Generator` for all levels (draw order: per level, mask then replacement index), so a run is reproducible.
 - Overfit tests use batch size 1: level 1 is built from `zhat_0 = 0`, so every row of a level-1 batch sees the identical input and a per-position head can emit only one level-1 prediction (same for the regression floor). A perfect fit is only meaningful with one sequence; this is a property of SPEC 5.1/5.3, not a test shortcut.
 
 ## Human must fill / do
@@ -168,9 +191,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. T3.3 (`jncm/generator/corruption.py`: none/swap/noise per SPEC 5.4).
-2. T3.4 (`jncm/generator/sample.py`: exactly K backbone calls per batch, heads from T3.2).
-3. T3.5 (`jncm/train_generator.py`: frozen tokenizer, all levels per pass, sampling + Gen PPL hook, position accounting, resume).
+1. T3.4 (`jncm/generator/sample.py`: exactly K backbone calls per batch, heads from T3.2).
+2. T3.5 (`jncm/train_generator.py`: frozen tokenizer, all levels per pass, sampling + Gen PPL hook, position accounting, resume; call `corrupt_codes(codes, cfg.generator.corrupt, generator=..., quantizer=cfg.tokenizer.quantizer)`).
+3. Finish T4.1 (`scripts/slurm/{gen,eval}.sbatch`) once T3.5/T4.2 exist.
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - G0a: not run

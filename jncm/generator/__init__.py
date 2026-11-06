@@ -7,6 +7,13 @@ from jncm.generator.backbone import (
     LevelTransformerBlock,
     SinusoidalPositionProjection,
 )
+from jncm.generator.corruption import (
+    MODES,
+    add_code_noise,
+    corrupt_codes,
+    linear_schedule,
+    swap_codes,
+)
 from jncm.generator.heads import (
     CEHead,
     FlowHead,
@@ -20,6 +27,7 @@ from jncm.generator.heads import (
 )
 
 __all__ = [
+    "MODES",
     "CEHead",
     "FlowHead",
     "FlowMLP",
@@ -30,8 +38,12 @@ __all__ = [
     "RegressHead",
     "SinusoidalPositionProjection",
     "SinusoidalTimeEmbedding",
+    "add_code_noise",
     "build_head",
+    "corrupt_codes",
     "level_weights",
+    "linear_schedule",
     "sample_codes",
+    "swap_codes",
     "weighted_total",
 ]
