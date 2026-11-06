@@ -25,3 +25,6 @@ htmlcov/
 *.egg-info/
 build/
 dist/
+
+# Archives (do not commit uploaded bundles)
+*.zip
