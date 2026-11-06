@@ -1,70 +1,88 @@
 # STATE — jncm
 
-Last updated: 2026-11-06 (verification + conformance pass; 49 tests pass on CPU)
+Last updated: 2026-11-06 (T2.4 review fixes F1–F10 complete; 64 tests pass on CPU)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M2 complete and VERIFIED (T2.1, T2.2, T2.3). M3 (generator) not started.
-- Last completed task: T2.3 (Tokenizer training loop, checkpointing, diagnostics, and tests).
-- Conformance pass done for M0–M2. Generator-side checks are N/A because `jncm/generator/` does not exist yet.
+- Milestone / task in progress: M0–M2 code complete; **T2.4 complete**. M3 (generator) not started.
+- Last completed task: T2.4 (review findings F1–F10, tests first, one commit per finding).
+- T0.2 real data prep and T1.2 real-data protocol gate remain human-run; their CPU tests pass.
+- Gate G0a is next after T1.2; do not start T3.1 until instructed.
 
 ## VERIFIED (command + last lines of output)
-- `.\.venv\Scripts\pytest.exe -x -q` (from repo root, CPU):
-  `.................................................`  
-  `49 passed in 6.23s`
-- `.\.venv\Scripts\python.exe -m jncm.train_tokenizer --config configs/smoke.yaml --steps 50 --run_id tok_vq_verified`:
+
+### T2.4 regression tests and full suite
+- Baseline before fixes: `pytest -q tests/test_review_fixes.py`
+  `6 failed, 4 passed in 1.85s`
+  Failures: F2[vq] (`index_add_` Float vs BFloat16), F3 missing `WindowPacker`, F4 explicit-synthetic kwarg, F4 meta mismatch, F6 unknown key, F10 schedule `[1, 2, 4]`.
+  Already passing at baseline: F1 (QKV was fixed last session), F2[noisy], F4 no-silent-fallback, F7 (straight-through VQ is the intended design).
+- Final: `pytest -q tests/test_review_fixes.py`
+  `............                                                             [100%]`
+  `12 passed in 6.29s`
+- Final full suite from repo root (venv on PATH): `pytest -q`
+  `................................................................         [100%]`
+  `64 passed in 8.67s`
+- F1 right-reason probe:
+  `params 49984 expected 49984 has_qkv_out True`
+  (exact 12*d^2+13*d parameter count; learned `qkv` and `out_proj` exist.)
+- F4 right-reason probe:
+  `missing: FileNotFoundError Prepared data not found at missing (need train.bin and val.b`  
+  `explicit synthetic: [128, 32]`  
+  `meta: ValueError meta.json L=128 does not match config L=32`
+
+### T2.3 / T2.4 smoke run (CPU)
+- `.\.venv\Scripts\python.exe -m jncm.train_tokenizer --config configs/smoke.yaml --steps 50 --allow_synthetic --run_id tok_vq_t24`
+  `Starting training run tok_vq_t24 (vq) for 50 steps on cpu...`  
+  `Step     1 | Loss: 4.3445 | acc_full: 0.0176 | tok_pos: 512`  
   `Step    50 | Loss: 4.0646 | acc_full: 0.0703 | tok_pos: 25600`  
-  `Training completed. Results written to results\tok_vq_verified`  
-  Last record contains `acc_cum`, `acc_full`, `tok_positions=25600`, `gen_positions=0`, `total_positions=25600`, `nominal_bits=6.0`, `codebook_usage`, `codebook_perplexity`.
-- `.\.venv\Scripts\python.exe -m jncm.train_tokenizer --config configs/smoke.yaml --steps 50 --set tokenizer.quantizer=noisy --run_id tok_noisy_verified`:
-  `Step    50 | Loss: 4.1415 | acc_full: 0.0352 | tok_pos: 25600`  
-  `Training completed. Results written to results\tok_noisy_verified`  
-  Last record contains `std_min`, `std_mean`, `eff_rank`, `nominal_bits=11.4319`, and the same position accounting.
-- Checkpoint round-trip (fresh model loads `results/tok_vq_verified/ckpt/latest.pt` with `strict=True`):
-  `step 49 tok_positions 25600`  
-  `missing [] unexpected []`
-- `test_tokenizer_checkpoint_roundtrip` (vq and noisy; state_dict → disk → fresh model → identical logits) passes.
-- Position accounting: all 38 pre-existing metrics records and all new records satisfy `tok_positions + gen_positions == total_positions`.
-- Conformance probes: `reconstruct(enc.codes)` matches `enc.zhat` with max abs diff `0.0` for both variants; noisy `codes - targets` std `0.409` (sigma 0.4), clean-code per-position variance `0.9999995`; VQ `targets` dtype `int64`, `codes` float vectors.
+  `Training completed. Results written to results\tok_vq_t24`
+- `results/tok_vq_t24/git_sha.txt` = `373f9141c7b5a2b067c5598ca832c6082618ddd6` (clean tree).
+- Last `metrics.jsonl` record: `data_source: "synthetic"`, `acc_cum: [0.015625, 0.017578125, 0.02734375, 0.0703125]`, `acc_full: 0.0703125`, `tok_positions: 25600`, `gen_positions: 0`, `total_positions: 25600`, `nominal_bits: 6.0`, codebook usage/perplexity present.
+- `python -m pip install -e .` finished with `Successfully installed jncm-0.1.0`.
+- `python scripts/eval_data_row.py --help` starts with:
+  `usage: eval_data_row.py [-h] [--data DATA] [--tokenizer TOKENIZER] ...`
+  `Evaluate Gen PPL and H on real validation data`
+
+## DECISIONS
+1. **VQ codes stay straight-through vectors.** `Encoded.codes` are float vectors with the straight-through estimator; `Encoded.targets` are the integer indices. The generator conditions from `targets`, never `codes` (SPEC 4.1; F7 test `reconstruct(enc.targets)` passes).
+2. **Keep the learned QKV/output projections and delete old smoke checkpoints.** All pre-existing `.pt` files under `results/` were deleted; only checkpoints from the current architecture remain (`results/tok_vq_t24`). Old Gemini/pre-QKV checkpoints are not loadable.
+3. **Level schedule uses the exact half-up integer formula** `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` (SPEC 2 / v1.2, F10). No Python `round`.
+
+## Files touched in T2.4
+- Code: `jncm/config.py`, `jncm/levels.py`, `jncm/tokenizer/vq.py`, `jncm/train_tokenizer.py`, `scripts/prep_tinystories.py`.
+- Packaging: `pyproject.toml` (new), `.gitignore` (zip archives).
+- Tests: `tests/test_review_fixes.py` (F5/F8 added), `tests/test_train_tokenizer.py` (F8 `results_dir`, F9 dirty/optimizer tests), `tests/test_data_prep.py` (F9 byte alphabet).
+- Docs: `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (SPEC.md not edited).
 
 ## UNVERIFIED / not run
-- T0.2 real data prep (`python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test`): needs Hugging Face network access; not run here. `pack_stories` unit tests pass.
-- T1.2 protocol gate on real data (`scripts/eval_data_row.py` with GPT-2-large): needs GPT-2-large weights and real TinyStories; not run. Mock-based test passes.
-- T3.1–T3.5 generator: not implemented in this draft. Checks (a) no-leak, (b) nested dropout vs generator targets, (c) generator targets/chain codes, and (f) generator checkpoint round-trip are N/A, not verified.
+- T0.2 real data prep (`python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test`): needs Hugging Face network access; not run. Packing/streaming tests pass.
+- T1.2 protocol gate on real data (`scripts/eval_data_row.py` with GPT-2-large): needs GPT-2-large weights and real TinyStories; not run. Mock test passes; `--help` verified.
+- T3.1–T3.5 generator: not implemented. Do not treat generator behavior as verified.
 - G0a/G0/G1/G2: human cluster gates, not run.
+- If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 
-## Known issues / bugs / deviations (fixed or not)
-Fixed in this session:
-1. `pytest.ini` was in `configs/` instead of the repo root, so `pytest -x -q` failed with `ModuleNotFoundError: No module named 'jncm'`. Moved to root and added `pythonpath = .`.
-2. `TransformerBlock` used the same tensor as Q, K, V and had no output projection. A pre-LN transformer (SPEC 4.1/5.2) needs learned projections; added `qkv = Linear(d, 3d)` and `out_proj = Linear(d, d)`.
-3. `nominal_bits` was logged only for `noisy`; SPEC 4.3 requires `bits_per_position(cfg)` for both variants. Now logged in every tokenizer diagnostics record.
-4. `requirements.txt` was under `configs/`; moved to repo root per T0.1/AGENTS layout.
-5. `setup_data` silently substituted synthetic random data when prepared memmaps were missing. Added `train.allow_synthetic_data` (default false; true only in `smoke.yaml`); real runs now raise `FileNotFoundError`.
-6. `meta.json` wrote the requested vocab size instead of the trained tokenizer's actual vocab size; now uses `tokenizer.get_vocab_size()`.
-7. Added the missing checkpoint round-trip test (T2.2(f)), explicit `tok+gen=total` assertions, and cutoff-range validation.
+## Known issues / deviations
+1. `GPT2Scorer.score_sample` scores one text at a time; batching is deferred to T4.2 as the review suggests.
+2. Resume restores model/optimizer but not the data iterator or RNG; reproducibility across resumes assumes the same batch size and seed. Acceptable for dev, noted here.
+3. Weight decay now excludes embeddings, LayerNorm parameters and biases (F9); this changes optimizer parameter groups, so pre-fix checkpoints cannot be resumed (model-only loading still works).
+4. `train_tokenizer` logs `train_loss` as the last batch loss, not an interval mean. SPEC does not define this field.
+5. `git_sha.txt` now ends in `-dirty` when the working tree has uncommitted changes.
+6. T0.2 and T1.2 remain unchecked in TASKS because their real-data acceptance runs have not happened.
 
-Open deviations / decisions:
-1. VQ `Encoded.codes` are straight-through float vectors, not indices. SPEC 4.1's API comment says “vq: same as targets”, but indices would break the straight-through gradient from decoder CE into the encoder; `targets` are indices as required and `reconstruct(enc.codes)` is bit-exact.
-2. `get_level_schedule` uses Python `round` (banker's rounding). SPEC 2 only says `round`; the specified dev/smoke schedules are unaffected. Example ambiguity: L=64, K=5 gives l_3=32 (half-up would give 33).
-3. `train_tokenizer` logs `train_loss` as the last batch loss, not an interval mean. SPEC does not define this field.
-4. `train_tokenizer` recomputes `tok_positions` from `(step+1) * batch_size * L`; resuming with a different batch size would mis-account. The tested resume path uses the same batch size.
-5. No generator module; M3 is the next milestone. Do not treat any generator behavior as verified.
-
-## ASSUMPTIONs (spec ambiguities I resolved; each also in docs/QUESTIONS.md)
-- Learned Q/K/V and output projections are part of the SPEC's “pre-LN transformer block” even though the block diagram does not spell them out.
-- VQ chain codes stay as straight-through vectors so decoder gradients reach the encoder; `targets` remain the integer indices.
-- Synthetic data is allowed only when `train.allow_synthetic_data=true`; real runs must fail loudly if `data/tinystories/{train,val}.bin` are missing.
-- Python's banker's rounding is an acceptable reading of the schedule's `round`.
+## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
+- Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
+- VQ `codes` remain straight-through vectors so decoder gradients reach the encoder; `targets` remain integer indices.
+- Learned Q/K/V and output projections are part of the SPEC's pre-LN transformer block.
+- SPEC v1.2 resolves the schedule tie-breaking ambiguity: exact half-up integer arithmetic.
 
 ## Human must fill / do
 - Run `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` on a login node (internet) to satisfy T0.2.
 - Run `python scripts/fetch_models.py` on a login node to download `gpt2-large` into `models/gpt2-large`.
 - Run `python scripts/prep_tinystories.py` to prepare `data/tinystories/`.
 - Run the T1.2 protocol gate on real validation data; record Gen PPL and H.
-- Run Gate G0a on cluster GPU: dev tokenizers (`vq` and `noisy`); record exact-token accuracy.
+- Run Gate G0a on a cluster GPU: dev tokenizers (`vq` and `noisy`); record exact-token accuracy.
 - Fill Slurm account and environment details.
-- Review the new QKV projections: checkpoints produced by the Gemini draft before this session are architecture-incompatible.
 
 ## Environment
 - Python / torch: Python 3.13.7, torch 2.15.0+cpu (CUDA unavailable on this host); numpy 2.5.4, pytest 9.2.0.
@@ -73,19 +91,21 @@ Open deviations / decisions:
   python -m venv .venv
   .\.venv\Scripts\python.exe -m pip install --upgrade pip
   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-  .\.venv\Scripts\python.exe -m pytest -x -q
+  .\.venv\Scripts\python.exe -m pip install -e .
+  .\.venv\Scripts\pytest.exe -q
   ```
 - Recreate on Linux/cluster:
   ```bash
   python3 -m venv .venv
   source .venv/bin/activate
   pip install -r requirements.txt
-  pytest -x -q
+  pip install -e .
+  pytest -q
   ```
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. T3.1 (`jncm/generator/backbone.py`: level-block transformer with no-leak guarantee).
+1. T3.1 (`jncm/generator/backbone.py`: level-block transformer with no-leak guarantee). Do not start until instructed.
 2. T3.2 (`jncm/generator/heads.py`: ce, regress, and flow matching heads).
 3. T3.3 (`jncm/generator/corruption.py`: none/swap/noise per SPEC 5.4).
 
