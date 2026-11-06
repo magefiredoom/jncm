@@ -18,6 +18,10 @@ class VectorQuantizer(nn.Module):
     Projects input u [B, l_k, d] -> u' [B, l_k, d_code], quantizes against codebook
     E_k [V_k, d_code], computes commitment loss beta * MSE(u', sg(e)), and maintains
     codebook weights via exponential moving average (no gradients on codebook).
+
+    SPEC 4.1: `targets` are the integer codebook indices and `codes` are
+    straight-through float vectors. The generator must condition on `targets`,
+    never on `codes`; both reproduce the same `zhat` chain.
     """
 
     def __init__(
