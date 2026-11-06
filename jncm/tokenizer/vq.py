@@ -69,52 +69,56 @@ class VectorQuantizer(nn.Module):
             codes: Code vectors with straight-through estimator [B, l_k, d_code]
             loss: Scalar commitment loss beta * MSE(u', sg(e))
         """
-        u_prime = self.proj(u)  # [B, l_k, d_code]
-        b, l_k, d_c = u_prime.shape
-        flat_u = u_prime.reshape(-1, d_c)
+        # SPEC 4.2: all VQ arithmetic runs in fp32 even under bf16 autocast.
+        # bf16 breaks the EMA accumulator dtype match and degrades argmin.
+        with torch.autocast(device_type=u.device.type, enabled=False):
+            u = u.float()
+            u_prime = self.proj(u)  # [B, l_k, d_code]
+            b, l_k, d_c = u_prime.shape
+            flat_u = u_prime.reshape(-1, d_c)
 
-        if self.training:
-            self._last_flat_u = flat_u.detach()
+            if self.training:
+                self._last_flat_u = flat_u.detach()
 
-        # Distance ||flat_u - E||^2 = ||flat_u||^2 + ||E||^2 - 2 flat_u E^T
-        embed_w = self.embedding.weight  # [V_k, d_code]
-        dist = (
-            torch.sum(flat_u**2, dim=1, keepdim=True)
-            + torch.sum(embed_w**2, dim=1).unsqueeze(0)
-            - 2.0 * torch.matmul(flat_u, embed_w.t())
-        )
+            # Distance ||flat_u - E||^2 = ||flat_u||^2 + ||E||^2 - 2 flat_u E^T
+            embed_w = self.embedding.weight  # [V_k, d_code]
+            dist = (
+                torch.sum(flat_u**2, dim=1, keepdim=True)
+                + torch.sum(embed_w**2, dim=1).unsqueeze(0)
+                - 2.0 * torch.matmul(flat_u, embed_w.t())
+            )
 
-        indices = torch.argmin(dist, dim=1)  # [B * l_k]
-        quantized = self.embedding(indices).view(b, l_k, d_c)
-        targets = indices.view(b, l_k)
+            indices = torch.argmin(dist, dim=1)  # [B * l_k]
+            quantized = self.embedding(indices).view(b, l_k, d_c)
+            targets = indices.view(b, l_k)
 
-        # EMA codebook update during training
-        if self.training:
-            with torch.no_grad():
-                counts = torch.bincount(indices, minlength=self.V_k).float()
-                sums = torch.zeros(self.V_k, d_c, device=u.device, dtype=u.dtype)
-                sums.index_add_(0, indices, flat_u)
+            # EMA codebook update during training
+            if self.training:
+                with torch.no_grad():
+                    counts = torch.bincount(indices, minlength=self.V_k).float()
+                    sums = torch.zeros(self.V_k, d_c, device=u.device, dtype=u.dtype)
+                    sums.index_add_(0, indices, flat_u)
 
-                self.cluster_size.mul_(self.ema_decay).add_(
-                    counts, alpha=1.0 - self.ema_decay
-                )
-                self.embed_avg.mul_(self.ema_decay).add_(
-                    sums, alpha=1.0 - self.ema_decay
-                )
+                    self.cluster_size.mul_(self.ema_decay).add_(
+                        counts, alpha=1.0 - self.ema_decay
+                    )
+                    self.embed_avg.mul_(self.ema_decay).add_(
+                        sums, alpha=1.0 - self.ema_decay
+                    )
 
-                # Laplace smoothing to prevent division by zero
-                n = torch.sum(self.cluster_size)
-                smoothed_size = (
-                    (self.cluster_size + 1e-5) / (n + self.V_k * 1e-5)
-                ) * n
-                new_w = self.embed_avg / smoothed_size.unsqueeze(1)
-                self.embedding.weight.copy_(new_w)
+                    # Laplace smoothing to prevent division by zero
+                    n = torch.sum(self.cluster_size)
+                    smoothed_size = (
+                        (self.cluster_size + 1e-5) / (n + self.V_k * 1e-5)
+                    ) * n
+                    new_w = self.embed_avg / smoothed_size.unsqueeze(1)
+                    self.embedding.weight.copy_(new_w)
 
-        # Commitment loss
-        loss = self.beta * F.mse_loss(u_prime, quantized.detach())
+            # Commitment loss
+            loss = self.beta * F.mse_loss(u_prime, quantized.detach())
 
-        # Straight-through estimator
-        codes = u_prime + (quantized - u_prime).detach()
+            # Straight-through estimator
+            codes = u_prime + (quantized - u_prime).detach()
 
         return targets, codes, loss
 
