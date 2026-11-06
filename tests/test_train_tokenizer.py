@@ -28,9 +28,10 @@ def test_train_tokenizer_smoke_vq(tmp_path: Path) -> None:
     cfg.device = "cpu"
 
     run_dir = tmp_path / "smoke_vq_run"
-    train(cfg=cfg, max_steps=10, run_id=str(run_dir.name))
+    results_dir = tmp_path / "results"
+    train(cfg=cfg, max_steps=10, run_id=str(run_dir.name), results_dir=results_dir)
 
-    out_dir = Path("results") / run_dir.name
+    out_dir = results_dir / run_dir.name
     assert out_dir.exists()
     assert (out_dir / "config.yaml").exists()
     assert (out_dir / "git_sha.txt").exists()
@@ -62,9 +63,10 @@ def test_train_tokenizer_smoke_noisy(tmp_path: Path) -> None:
     cfg.device = "cpu"
 
     run_dir = tmp_path / "smoke_noisy_run"
-    train(cfg=cfg, max_steps=10, run_id=str(run_dir.name))
+    results_dir = tmp_path / "results"
+    train(cfg=cfg, max_steps=10, run_id=str(run_dir.name), results_dir=results_dir)
 
-    out_dir = Path("results") / run_dir.name
+    out_dir = results_dir / run_dir.name
     assert out_dir.exists()
     assert (out_dir / "metrics.jsonl").exists()
 
@@ -89,16 +91,23 @@ def test_train_tokenizer_resume(tmp_path: Path) -> None:
     cfg.device = "cpu"
 
     run_name = f"resume_test_{tmp_path.name}"
+    results_dir = tmp_path / "results"
     # Train 5 steps
-    train(cfg=cfg, max_steps=5, run_id=run_name)
+    train(cfg=cfg, max_steps=5, run_id=run_name, results_dir=results_dir)
 
-    ckpt_path = Path("results") / run_name / "ckpt" / "latest.pt"
+    ckpt_path = results_dir / run_name / "ckpt" / "latest.pt"
     assert ckpt_path.exists()
 
     # Resume for 5 more steps (total 10 steps)
-    train(cfg=cfg, max_steps=10, run_id=run_name, resume_path=ckpt_path)
+    train(
+        cfg=cfg,
+        max_steps=10,
+        run_id=run_name,
+        resume_path=ckpt_path,
+        results_dir=results_dir,
+    )
 
-    logger = JSONLLogger(Path("results") / run_name / "metrics.jsonl")
+    logger = JSONLLogger(results_dir / run_name / "metrics.jsonl")
     records = logger.read_all()
     last_record = records[-1]
     assert last_record["step"] == 10

@@ -158,6 +158,7 @@ def train(
     max_steps: int | None = None,
     run_id: str | None = None,
     resume_path: str | Path | None = None,
+    results_dir: str | Path = "results",
 ) -> Path:
     """Execute tokenizer training loop."""
     seed_everything(cfg.seed)
@@ -174,7 +175,7 @@ def train(
         ts = time.strftime("%Y%m%d_%H%M%S")
         run_id = f"tok_{cfg.tokenizer.quantizer}_{ts}"
 
-    run_dir = Path("results") / run_id
+    run_dir = Path(results_dir) / run_id
     ckpt_dir = run_dir / "ckpt"
     samples_dir = run_dir / "samples"
     ckpt_dir.mkdir(parents=True, exist_ok=True)

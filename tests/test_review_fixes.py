@@ -128,6 +128,25 @@ def test_f6_unknown_config_keys_raise() -> None:
         load_config(None, ["tokenizer.sigma_K=0.3"])  # typo: real key is sigma_k
 
 
+# ---------------------------------------------------------------- F8
+def test_f8_train_writes_under_results_dir(tmp_path: Path) -> None:
+    from jncm.train_tokenizer import train
+
+    cfg = load_config(Path("configs/smoke.yaml"))
+    cfg.train.eval_every = 1
+    cfg.train.save_every = 2
+    cfg.train.batch_size = 2
+    cfg.device = "cpu"
+
+    results_dir = tmp_path / "custom_results"
+    train(cfg=cfg, max_steps=2, run_id="f8_run", results_dir=results_dir)
+
+    run_dir = results_dir / "f8_run"
+    assert (run_dir / "config.yaml").exists()
+    assert (run_dir / "metrics.jsonl").exists()
+    assert (run_dir / "ckpt" / "latest.pt").exists()
+
+
 # ---------------------------------------------------------------- F7
 def test_f7_vq_chain_reproducible_from_indices() -> None:
     torch.manual_seed(0)
