@@ -151,6 +151,12 @@ def _dict_to_dataclass(cls: type, data: dict[str, Any]) -> Any:
     """Recursively instantiate dataclass from nested dictionary."""
     if not is_dataclass(cls):
         return data
+    allowed = {f.name for f in fields(cls)}
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise ValueError(
+            f"Unknown config key(s) for {cls.__name__}: {', '.join(unknown)}"
+        )
     hints = get_type_hints(cls)
     kwargs: dict[str, Any] = {}
     for f in fields(cls):
