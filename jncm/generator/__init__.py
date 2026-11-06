@@ -18,6 +18,7 @@ from jncm.generator.heads import (
     CEHead,
     FlowHead,
     FlowMLP,
+    LevelHead,
     RegressHead,
     SinusoidalTimeEmbedding,
     build_head,
@@ -25,6 +26,7 @@ from jncm.generator.heads import (
     sample_codes,
     weighted_total,
 )
+from jncm.generator.sample import sample_tokens
 
 __all__ = [
     "MODES",
@@ -34,6 +36,7 @@ __all__ = [
     "GeneratorBackbone",
     "LevelBlockTransformer",
     "LevelInputEmbedding",
+    "LevelHead",
     "LevelTransformerBlock",
     "RegressHead",
     "SinusoidalPositionProjection",
@@ -43,6 +46,7 @@ __all__ = [
     "corrupt_codes",
     "level_weights",
     "linear_schedule",
+    "sample_tokens",
     "sample_codes",
     "swap_codes",
     "weighted_total",

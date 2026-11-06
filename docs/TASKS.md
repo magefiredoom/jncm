@@ -48,8 +48,8 @@ Work on the first unchecked task. One task per session unless told otherwise.
   Accept tests: ce and regress overfit a fixed batch; flow learns a 2-D toy (mixture of two Gaussians at +-1, std 0.1) and its samples are bimodal (at least 35% in each mode); seeded determinism. — PASSED 2026-11-06 (`tests/test_generator_heads.py`: 13 tests; ce fits 66/66 indices, regress MSE 4.6e-4, toy 0.45/0.55 split with 97% near a mode; full suite 86 passed).
 - [x] **T3.3 Corruption.** `generator/corruption.py` per SPEC 5.4.
   Accept tests: empirical swap rate matches p_j within 0.03; targets are untouched; `none` is the identity. — PASSED 2026-11-06 (`tests/test_generator_corruption.py`: 9 tests; observed 0.816/0.601/0.396/0.196 vs 0.8/0.6/0.4/0.2, noise std 0.500/0.366/0.234/0.100 vs 0.5/0.3667/0.2333/0.1; full suite 95 passed).
-- [ ] **T3.4 Sampler.** `generator/sample.py` per SPEC 5.6.
-  Accept tests: exactly K backbone calls (forward hook), correct shapes, token ids in [0, V), same seed gives same samples.
+- [x] **T3.4 Sampler.** `generator/sample.py` per SPEC 5.6.
+  Accept tests: exactly K backbone calls (forward hook), correct shapes, token ids in [0, V), same seed gives same samples. — PASSED 2026-11-06 (`tests/test_generator_sample.py`: 14 tests; hook count K at B=1/3 and K=1/4, ids in range for ce/regress/flow, seeded determinism, sampler equals the manual SPEC 5.6 loop; mutant probes (no accumulation, extra backbone call) each kill 4 tests; full suite 109 passed).
 - [ ] **T3.5 Generator training.** `jncm/train_generator.py` per SPEC 5.5 to 5.7: frozen tokenizer checkpoint, all levels in one pass, periodic sampling plus Gen PPL hook, position accounting, resume.
   Accept (`pytest -m slow`, CPU): memorization test. Overfit the tokenizer on 8 fixed sequences, then the generator; sampled outputs match the training sequences at >= 90% token accuracy for `ce` and `regress`, >= 80% for `flow`.
 

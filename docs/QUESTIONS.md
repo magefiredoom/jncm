@@ -29,6 +29,9 @@ These are recorded as ASSUMPTIONs in STATE.md; none changes a SPEC decision.
 - Loss granularity: each head's `loss` returns per-level means; SPEC 5.5's `sum_k w_k * sum_i loss_{k,i}` is `weighted_total` = `sum_k w_k * l_k * mean_k`, which is exact for per-position losses (`alpha=0` gives the position-weighted mean, `alpha=1` the equal-per-level mean; both tested).
 - Overfit acceptance batches use B = 1: at level 1 the input comes from `zhat_0 = 0`, so all rows of a level-1 batch are identical and a per-position head can predict only one level-1 code (likewise the regression floor is the variance of the level-1 targets). A 100% batch fit requires one sequence; that is a property of SPEC 5.1/5.3, not a weakened test.
 
+## Q7 — Sampler module mode and no_grad (ASSUMPTION, non-blocking)
+SPEC 5.6 gives the sampling loop but not the module state it runs in. `sample_tokens` leaves train/eval modes untouched (a sampler that flips modes would surprise a training loop) and wraps the loop in `torch.no_grad()`; callers that care about dropout/init-noise semantics must call `.eval()` first. All randomness (head sampling, flow start, channel noise) consumes one explicit `torch.Generator`, per level in order, so `Generator().manual_seed(s)` reproduces a whole sample. Recorded as an ASSUMPTION in STATE.md; SPEC.md not edited.
+
 ## Q5 — Remaining F9 minor items (open, non-blocking)
 - `GPT2Scorer.score_sample` still scores one text at a time. Batching is deferred to T4.2, as the review recommends.
 - Resume restores model and optimizer (including the new decay/no-decay groups) but not the data iterator or RNG. Acceptable for dev; same batch size and seed required for reproducible resume.
