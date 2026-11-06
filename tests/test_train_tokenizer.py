@@ -19,6 +19,50 @@ def test_setup_data_refuses_synthetic_for_real_runs(tmp_path: Path) -> None:
         setup_data(cfg, data_dir=tmp_path / "missing_data")
 
 
+def test_git_sha_marks_dirty_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jncm.train_tokenizer as tt
+
+    def fake_check_output(cmd: list[str], stderr: object = None) -> bytes:
+        if cmd[1] == "rev-parse":
+            return b"deadbeef\n"
+        if cmd[1] == "status":
+            return b" M jncm/dirty_file.py\n"
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(tt.subprocess, "check_output", fake_check_output)
+    assert tt.get_git_sha() == "deadbeef-dirty"
+
+
+def test_optimizer_excludes_embeddings_norms_and_biases_from_decay() -> None:
+    from jncm.tokenizer import MultiscaleTokenizer
+    from jncm.train_tokenizer import build_optimizer
+
+    cfg = load_config(Path("configs/smoke.yaml"))
+    model = MultiscaleTokenizer(cfg.tokenizer, L=cfg.L, V=cfg.V)
+    optimizer = build_optimizer(model, cfg)
+
+    decay_ids = {
+        id(p)
+        for group in optimizer.param_groups
+        if group["weight_decay"] > 0
+        for p in group["params"]
+    }
+    no_decay_ids = {
+        id(p)
+        for group in optimizer.param_groups
+        if group["weight_decay"] == 0
+        for p in group["params"]
+    }
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        assert id(param) in decay_ids or id(param) in no_decay_ids
+        if "emb" in name or param.ndim < 2:
+            assert id(param) in no_decay_ids, name
+        else:
+            assert id(param) in decay_ids, name
+
+
 def test_train_tokenizer_smoke_vq(tmp_path: Path) -> None:
     cfg = load_config(Path("configs/smoke.yaml"))
     cfg.tokenizer.quantizer = "vq"

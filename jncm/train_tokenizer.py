@@ -25,14 +25,50 @@ from jncm.utils import JSONLLogger, bits_per_position, seed_everything
 
 
 def get_git_sha() -> str:
-    """Retrieve current git commit SHA if in a repository."""
+    """Retrieve current commit SHA, suffixed with '-dirty' if the tree is dirty."""
     try:
         out = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
         )
-        return out.decode("utf-8").strip()
+        sha = out.decode("utf-8").strip()
     except Exception:
         return "unknown"
+    try:
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL
+        )
+        if status.decode("utf-8").strip():
+            return f"{sha}-dirty"
+    except Exception:
+        pass
+    return sha
+
+
+def build_optimizer(
+    model: torch.nn.Module,
+    cfg: Config,
+) -> torch.optim.AdamW:
+    """AdamW with weight decay only on weights (not embeddings, norms, or biases)."""
+    decay: list[torch.nn.Parameter] = []
+    no_decay: list[torch.nn.Parameter] = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.ndim < 2 or "emb" in name:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+
+    groups = [
+        {"params": decay, "weight_decay": cfg.train.weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+    groups = [group for group in groups if group["params"]]
+    return torch.optim.AdamW(
+        groups,
+        lr=cfg.train.lr,
+        betas=tuple(cfg.train.betas),
+    )
 
 
 def get_lr(step: int, warmup_steps: int, max_steps: int, lr: float, min_lr: float) -> float:
@@ -233,12 +269,7 @@ def train(
     # Model
     model = MultiscaleTokenizer(cfg.tokenizer, L=cfg.L, V=cfg.V).to(device)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=cfg.train.lr,
-        betas=tuple(cfg.train.betas),
-        weight_decay=cfg.train.weight_decay,
-    )
+    optimizer = build_optimizer(model, cfg)
 
     start_step = 0
     if resume_path:

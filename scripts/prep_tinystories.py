@@ -112,6 +112,7 @@ def train_bpe_tokenizer(
     trainer = BpeTrainer(
         vocab_size=vocab_size,
         special_tokens=["<pad>", "<eos>"],
+        initial_alphabet=ByteLevel.alphabet(),
         show_progress=True,
     )
     tokenizer.train_from_iterator(story_texts, trainer=trainer)
