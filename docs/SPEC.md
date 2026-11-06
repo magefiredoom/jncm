@@ -1,6 +1,10 @@
-# SPEC — jncm (v1, 2026-11-03)
+# SPEC — jncm (v1.2, 2026-11-05)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
+
+**v1.1 changes** (from docs/REVIEW_M0-M2.md): learned attention projections made explicit (4.1); vq `codes` are straight-through vectors and the generator conditions from `targets` (4.1); vq arithmetic in fp32 (4.2); bounded-memory data prep and no silent synthetic fallback (3); unknown config keys raise (7).
+
+**v1.2 change:** level-schedule ties round half up, defined with exact integer arithmetic (2).
 
 ## 1. Purpose and scope
 
@@ -34,9 +38,10 @@ Use these to validate the evaluation protocol and sanity-check runs. Never tune 
 | sigma_k | channel noise std (noisy) | 0.4 | 0.4 |
 | H | generator width | 768 | 128 |
 
-Level schedule: `l_k = round(1 + (k-1)*(L-1)/(K-1))` for k = 1..K.
+Level schedule: `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` for k = 1..K. This is `round(1 + (k-1)*(L-1)/(K-1))` with exact ties rounded **up** (not Python's banker's rounding), computed in integers.
 - L=128, K=12 gives [1, 13, 24, 36, 47, 59, 70, 82, 93, 105, 116, 128] (sum 774).
 - L=32, K=4 gives [1, 11, 22, 32] (sum 66).
+- Tie examples: L=128, K=11 gives 65 at k=6 (64.5 rounds up); L=4, K=3 gives [1, 3, 4].
 - Must satisfy l_1 = 1, l_K = L, strictly increasing (unit test).
 
 Tensor layout: pooling and interpolation operate on [B, C, T]. Our modules use [B, T, C]; transpose explicitly and unit-test with l = 1 and l = L (`down(x, L)` and `up(x, L)` must be the identity).
@@ -46,8 +51,9 @@ Tensor layout: pooling and interpolation operate on [B, C, T]. Our modules use [
 - Dataset: HF `roneneldan/TinyStories`, train and validation splits.
 - Tokenizer: BPE, vocab 8192, trained with HF `tokenizers` on a subset of the train text; specials `<pad>`, `<eos>`.
 - Packing: concatenate stories separated by `<eos>`, cut into non-overlapping windows of exactly L tokens (drop the remainder). Store uint16 memmaps `data/tinystories/{train,val}.bin` plus `meta.json` (counts, V, L) and `tokenizer.json`.
-- Download and tokenization happen only in `scripts/prep_tinystories.py` (login node). Training and eval read memmaps only.
+- Download and tokenization happen only in `scripts/prep_tinystories.py` (login node). Training and eval read memmaps only. Prep runs in bounded memory: tokenize and pack in chunks (about 20,000 stories), write windows incrementally, carry the unfinished tail to the next chunk. Never hold the full dataset in Python lists (about 37 bytes per token).
 - Unit tests use synthetic random sequences (seeded). They never touch real data or the network.
+- No silent fallback to synthetic data. If real `train.bin` / `val.bin` are missing, training raises `FileNotFoundError`; if `meta.json` exists and its `L` or `V` differ from the config, it raises `ValueError`. Synthetic data is allowed only with an explicit `--allow_synthetic` flag (smoke tests) and is recorded as `data_source` in the run's config or metrics.
 
 ## 4. Multiscale residual tokenizer (`jncm/tokenizer/`)
 
@@ -65,7 +71,7 @@ for k in 1..K:
 ```
 
 - `R_k` (reconstruction operator): Linear(code width -> d) applied to the code vectors, then linear interpolation from l_k to L positions (`F.interpolate(mode="linear", align_corners=False)`; for l_k = 1 this is a broadcast), then depthwise Conv1d(kernel 3, padding 1). **[DECISION]** (NCM does not specify the parameterization.)
-- Decoder: `decoder_blocks` bidirectional pre-LN transformer blocks (default 1; d, 6 heads, learned positions added to the input) followed by Linear(d -> V). Weight tying with Emb is allowed.
+- Decoder: `decoder_blocks` bidirectional pre-LN transformer blocks (default 1; d, 6 heads, learned positions added to the input) followed by Linear(d -> V). Weight tying with Emb is allowed. Each block is a standard pre-LN block: multi-head self-attention with learned q, k, v and output projections (`scaled_dot_product_attention`), a GELU MLP with ratio 4, and two LayerNorms (12d^2 + 13d parameters). Attention without projections is a bug.
 - `decode(zhat_k)` returns logits [B,L,V].
 
 API (all variants):
@@ -75,7 +81,8 @@ API (all variants):
 class Encoded:
     targets: list[Tensor]   # per level. vq: LongTensor [B,l_k]. noisy: CLEAN code c_k [B,l_k,d_k]
     codes:   list[Tensor]   # per level, the codes actually used in the residual chain
-                            #   vq: same as targets.  noisy: c_k + sigma_k * eps
+                            #   vq: straight-through code vectors [B,l_k,d_code] (value = codebook entry).
+                            #   noisy: c_k + sigma_k * eps
     zhat:    list[Tensor]   # K+1 tensors [B,L,d]; zhat[0] = 0; zhat[k] = cumulative recon after level k
     quant_loss: Tensor      # scalar (0 for noisy)
 
@@ -86,12 +93,13 @@ class MultiscaleTokenizer(nn.Module):
     def decode(self, zhat_k: Tensor) -> Tensor                  # logits [B,L,V]
 ```
 
-`encode` followed by `reconstruct(enc.codes)` must reproduce `enc.zhat` exactly (unit test).
+`encode` followed by `reconstruct(enc.codes)` must reproduce `enc.zhat` exactly (unit test). For vq, `reconstruct(enc.targets)` (indices) must also reproduce `enc.zhat`: the generator builds its conditioning from `targets`, never from `codes`.
 
 ### 4.2 Variant `vq` (discrete baseline, NCM-style)
 
 - u' = Linear_k(u): [B,l_k,d_code]. Codebook E_k in R^{V_k x d_code}. idx = argmin_j ||u' - E_k[j]||^2. e = E_k[idx]. Straight-through: e_st = u' + (e - u').detach(). `contrib` uses R_k(e_st) in training and R_k(E_k[idx]) when called from codes.
 - Loss: per level `beta * MSE(u', sg(e))` with beta = 0.25, summed over levels up to the cutoff. **[DECISION]** (per-level commitment; NCM's Eq. 9 uses a cumulative form.)
+- All vq arithmetic (projection, distances, EMA update, loss) runs in fp32 even under autocast; bf16 breaks the EMA update and degrades the argmin.
 - Codebooks update by EMA, decay 0.99, no gradient. Dead-code reinit: every 200 steps replace codes whose EMA usage is below 1e-4 of the mean usage with random current u' vectors.
 
 ### 4.3 Variant `noisy` (continuous) **[DECISION]**
@@ -193,7 +201,7 @@ Each evaluation writes 32 decoded samples to `results/<run_id>/samples/step_<n>.
 
 ## 7. Configs, logging, reproducibility
 
-- YAML configs load into dataclasses (no hydra). CLI override: `--set a.b=value`.
+- YAML configs load into dataclasses (no hydra). CLI override: `--set a.b=value`. Unknown keys (YAML or `--set`) raise `ValueError`: a typo must never run silently. The results root is configurable (default `results`); tests use temporary directories.
 - `results/<run_id>/` contains `config.yaml`, `git_sha.txt`, `metrics.jsonl` (one JSON object per eval or log step), `ckpt/`, `samples/`.
 - Seed everything (python, numpy, torch, DataLoader generators). Checkpoints are resumable.
 - No wandb. Logging is JSONL plus `scripts/plot_curves.py`.
