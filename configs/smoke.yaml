@@ -51,6 +51,8 @@ generator:
     batch_size: 16
     eval_every: 50
     save_every: 100
+    save_milestones: true
+    milestones: [0.10, 0.25, 0.50, 1.0]
 
 jepa:
   enabled: false

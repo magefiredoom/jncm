@@ -99,15 +99,87 @@ class GPT2Scorer:
             )
             return (float(nll_sum.item()), t_len - 1)
 
-    def score_texts(self, texts: list[str]) -> tuple[float, int]:
-        """Score a list of texts and return cumulative (total_nll, total_tokens)."""
-        tot_nll = 0.0
-        tot_tokens = 0
-        for t in texts:
-            nll, count = self.score_sample(t)
-            tot_nll += nll
-            tot_tokens += count
-        return (tot_nll, tot_tokens)
+    def _encode(self, text: str) -> list[int]:
+        """Token ids for one text, never truncated (SPEC 6.1)."""
+        enc = self._tokenizer(text)
+        ids = enc["input_ids"]
+        if torch.is_tensor(ids):
+            return [int(token) for token in ids.reshape(-1).tolist()]
+        if ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+        return [int(token) for token in ids]
+
+    def _padding_id(self) -> int:
+        """Pad id for batching; GPT-2 has no pad token, so fall back to EOS."""
+        pad = getattr(self._tokenizer, "pad_token_id", None)
+        if pad is None:
+            pad = getattr(self._tokenizer, "eos_token_id", None)
+        return 0 if pad is None else int(pad)
+
+    def score_batch(self, texts: list[str], batch_size: int = 8) -> tuple[float, int]:
+        """
+        Score a list of texts in right-padded batches (SPEC 6.1).
+
+        Padding is safe: the model receives an attention mask and both the NLL
+        sum and the token count cover only non-pad target positions. Texts of
+        equal length are scored together without padding. ``score_sample`` is
+        the one-at-a-time reference path and must agree with this method.
+
+        Args:
+            texts: decoded sample strings.
+            batch_size: maximum number of texts per forward pass (>= 1).
+
+        Returns:
+            ``(total_nll, num_scored_tokens)`` over all texts.
+        """
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        self._load()
+        pad_id = self._padding_id()
+        total_nll = 0.0
+        total_tokens = 0
+        for start in range(0, len(texts), batch_size):
+            chunk = [self._encode(text) for text in texts[start : start + batch_size]]
+            max_len = max((len(ids) for ids in chunk), default=0)
+            if max_len <= 1:
+                continue
+            input_ids = torch.full(
+                (len(chunk), max_len), pad_id, dtype=torch.long, device=self.device
+            )
+            attention = torch.zeros(
+                (len(chunk), max_len), dtype=torch.long, device=self.device
+            )
+            for row, ids in enumerate(chunk):
+                if ids:
+                    input_ids[row, : len(ids)] = torch.tensor(
+                        ids, dtype=torch.long, device=self.device
+                    )
+                    attention[row, : len(ids)] = 1
+            with torch.no_grad():
+                logits = self._model(input_ids, attention_mask=attention).logits  # [B, T, V]
+                shift_logits = logits[:, :-1, :]
+                shift_labels = input_ids[:, 1:]
+                shift_mask = attention[:, 1:].bool()
+                token_nll = torch.nn.functional.cross_entropy(
+                    shift_logits.reshape(-1, shift_logits.size(-1)),
+                    shift_labels.reshape(-1),
+                    reduction="none",
+                ).view(shift_labels.shape)
+                total_nll += float((token_nll * shift_mask).sum().item())
+                total_tokens += int(shift_mask.sum().item())
+        return (total_nll, total_tokens)
+
+    def score_texts(
+        self, texts: list[str], batch_size: int = 8
+    ) -> tuple[float, int]:
+        """Score a list of texts in batches; cumulative (total_nll, total_tokens)."""
+        return self.score_batch(texts, batch_size=batch_size)
+
+    @property
+    def tokenizer(self) -> Any:
+        """The loaded GPT-2 tokenizer (loads the model on first access)."""
+        self._load()
+        return self._tokenizer
 
 
 def gen_ppl(texts: list[str], scorer: Any) -> float:

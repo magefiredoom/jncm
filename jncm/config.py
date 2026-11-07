@@ -51,6 +51,10 @@ class GeneratorTrainConfig:
     batch_size: int = 1024
     eval_every: int = 500
     save_every: int = 5000
+    save_milestones: bool = True
+    milestones: list[float] = field(
+        default_factory=lambda: [0.10, 0.25, 0.50, 1.0]
+    )
 
 
 @dataclass
@@ -186,6 +190,11 @@ def _dict_to_dataclass(cls: type, data: dict[str, Any]) -> Any:
             else:
                 kwargs[f.name] = val
     return cls(**kwargs)
+
+
+def config_from_dict(data: dict[str, Any]) -> Config:
+    """Build a Config from a plain dictionary (for example a checkpoint's)."""
+    return _dict_to_dataclass(Config, data)
 
 
 def load_config(

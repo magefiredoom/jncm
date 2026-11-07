@@ -1,14 +1,15 @@
 # STATE — jncm
 
-Last updated: 2026-11-07 (T0.2 and T1.2 verified on real data; Gen PPL 10.80, H 4.03)
+Last updated: 2026-11-07 (T4.2 complete: batched GPT-2 scoring, eval and plot scripts, eval.sbatch; full suite 147 passed)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 complete; **T2.4, T3.1, T3.2, T3.3, T3.4, T3.5, T4.1, T0.2, T1.2 complete**; next task **T4.2** (eval and plots), with G0a/G0 still human-run on FIR.
-- Last completed task: T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance. Before that, T3.5 (`jncm/train_generator.py`); Q8 resolved.
+- Milestone / task in progress: M0–M2 complete; **T2.4, T3.1, T3.2, T3.3, T3.4, T3.5, T4.1, T4.2, T0.2, T1.2 complete**; next task **T4.3** (RUNBOOK), with G0a/G0 still human-run on FIR.
+- Last completed task: T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
 - T3.5 acceptance passes as written in TASKS.md: `ce` and `flow` memorise 8 sequences; `regress` memorises one unconditional sequence and, with the true level-1 code supplied, reproduces all 8 sequences when sampling levels 2..K.
-- T4.1 is ticked for prep/tok/gen only. TASKS assigns `scripts/slurm/eval.sbatch` to T4.2 (it evaluates checkpoints written by `run_eval.py`).
+- All four Slurm templates now exist (`prep`, `tok`, `gen`, `eval`); `eval.sbatch` evaluates the milestone checkpoints with one array task per seed.
+- T4.2 milestone checkpoints: the generator trainer writes `ckpt/milestone_<pct>.pt` at 10/25/50/100% of the budget when `generator.train.save_milestones` is on (default), and `run_eval.py` evaluates exactly those by default.
 - T0.2 real data prep and the T1.2 protocol gate are now verified locally on real TinyStories data; `models/gpt2-large` is present in `models/gpt2-large`.
 - Gate G0a is next (cluster, human): copy `data/tinystories/` and `models/gpt2-large/` to FIR first.
 
@@ -30,6 +31,24 @@ Rule: newest information wins. Rewrite sections; do not append history.
   `H (Dataset tokens):4.03 +/- 0.01`
   `Verdict: PASS`
 - `results/t1_2_protocol_gate.json`: `n_samples 256`, `n_seeds 5`; PPL runs 10.46–11.23, H std <= 0.008. Metric, tokenizer and thresholds unchanged.
+
+### T4.2 eval and plots — VERIFIED 2026-11-07
+- `bash -n` on all four templates from the repo root (`for f in prep tok gen eval; do bash -n scripts/slurm/$f.sbatch; done`): all exit 0.
+- Focused: `.venv/Scripts/python.exe -m pytest -q tests/test_genppl_batched.py tests/test_run_eval.py tests/test_plot_curves.py tests/test_eval_sbatch.py tests/test_genppl.py`
+  `27 passed in 6.10s`  (EXIT=0)
+- Full suite: `.venv/Scripts/python.exe -m pytest -x -q`
+  `147 passed in 176.23s (0:02:56)`  (EXIT=0)
+- Batched vs one-at-a-time scoring with the real `models/gpt2-large` (4 texts of different lengths, CPU):
+  `tokens ref 35 batch 35`
+  `mean_nll ref 3.18554666 batch 3.18554709 diff 4.360e-07`
+  The batched path is padding-safe and matches `score_sample` far inside the 1e-4 requirement.
+- End-to-end CLI smoke on a throwaway 4-step smoke run (real GPT-2; temp dir deleted afterwards, no numbers written to `results/`):
+  `milestones: ['milestone_010.pt', 'milestone_050.pt', 'milestone_100.pt']`
+  `step 4 (1.0): Gen PPL 259.84 +/- 19.05, total_positions 2560`
+  `wrote 9 eval records under .tmp_t42_e2e/results/gen_tiny/eval`
+  `gen_tiny: 3 checkpoints` followed by `wrote .tmp_t42_e2e/curves.png` (113,500 bytes).
+- Tests cover: batching (padding-safe token counts, NLL equal to `score_sample`, `score_texts` delegation, `gen_ppl` agreement); eval JSON fields (PPL mean/std = exp(2), H on both token variants, `unique_frac`, `pairwise_agree`, positions, seed shards); checkpoint-config validation and rebuilding from the checkpoint's own architecture; milestone saving behind the flag plus `milestone_steps`; shard merging; plot fixtures (tokenizer offset, shard filtering, PNG); `bash -n` and the T4.1 conventions.
+- T1.2 was not re-run: the batched path is its only changed code, and the real-model probe above bounds the difference at 4.4e-7 mean NLL.
 
 ### G0a cluster run — in progress (2026-11-07)
 - Local tree: `git status` clean after committing `AGENTS.md` (FIR operator rules); one empty untracked `docs/test.py` remains.
@@ -207,6 +226,12 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Tests: `tests/test_generator_backbone.py` (new, 9 tests).
 - Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
 
+## Files touched in T4.2
+- Code: `jncm/eval/genppl.py` (`score_batch`, batched `score_texts`, `tokenizer` property; `score_sample` unchanged as the reference), `jncm/config.py` (`GeneratorTrainConfig.save_milestones`/`milestones`, `config_from_dict`), `jncm/train_generator.py` (`milestone_steps`, milestone checkpoint saving), `configs/smoke.yaml`, `configs/tinystories_dev.yaml`.
+- Scripts: `scripts/run_eval.py` (new), `scripts/plot_curves.py` (new), `scripts/slurm/eval.sbatch` (new).
+- Tests: `tests/test_genppl_batched.py`, `tests/test_run_eval.py`, `tests/test_plot_curves.py`, `tests/test_eval_sbatch.py` (new).
+- Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
+
 ## Files touched in T4.1
 - `scripts/slurm/prep.sbatch`, `scripts/slurm/tok.sbatch`, `scripts/slurm/gen.sbatch` (new), `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (Q9). No `eval.sbatch` — T4.2 owns it.
 
@@ -222,9 +247,10 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - T3.1–T3.4 were verified on eval-mode modules; T3.5 is the first end-to-end (tokenizer -> generator -> decode) check, but only on 8 fixed sequences.
 - G0a/G0/G1/G2: human cluster gates, not run.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
+- T4.2 is verified on smoke-scale checkpoints and the throwaway CLI run above; a real 256-sample x 5-seed eval on a trained generator has not run yet (the real GPT-2 scoring path itself is covered by the T1.2 gate and the batched probe).
 
 ## Known issues / deviations
-1. `GPT2Scorer.score_sample` scores one text at a time; batching is deferred to T4.2 as the review suggests.
+1. `GPT2Scorer.score_texts` scores in right-padded batches (default 8 texts); `score_sample` stays as the one-at-a-time reference. A real GPT-2 probe agrees to 4.4e-7 mean NLL (T4.2 VERIFIED).
 2. Resume restores model/optimizer but not the data iterator or RNG; reproducibility across resumes assumes the same batch size and seed. Acceptable for dev, noted here.
 3. Weight decay now excludes embeddings, LayerNorm parameters and biases (F9); this changes optimizer parameter groups, so pre-fix checkpoints cannot be resumed (model-only loading still works).
 4. `train_tokenizer` logs `train_loss` as the last batch loss, not an interval mean. SPEC does not define this field.
@@ -255,7 +281,12 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - SPEC 5.7's generator defaults live in `generator.train` (lr 3e-4 -> 3e-5, wd 0.1, warmup 500, batch 1024, 10k steps), separate from the tokenizer's SPEC 4.4 `train` block. `smoke.yaml` overrides them to batch 16 / 200 steps so CPU smoke runs stay short; tests override them further.
 - `train_generator` reads `tok_positions` from the tokenizer checkpoint as the curve offset for SPEC 6.2; `gen_positions = step * batch * L` and `total_positions` is their sum. A resume keeps the checkpoint's `tok_positions` and recomputes `gen_positions` from the step (same batch size assumed, as in the tokenizer trainer).
 - `train_generator` requires the head/variant pairing of SPEC 5.3 (`ce` with vq, `regress`/`flow` with noisy) and fails loudly otherwise; the config does not guess.
-- Q9: T4.1 asks every template for the three `HF_*_OFFLINE` variables, but `prep.sbatch` exists to download TinyStories. `tok.sbatch`/`gen.sbatch` set all three; `prep.sbatch` sets none and says it needs Hub access. Smallest reversible choice; the submit forms and placeholder list above are the contract.
+- Q9: T4.1 asks every template for the three `HF_*_OFFLINE` variables, but `prep.sbatch` exists to download TinyStories. `tok.sbatch`/`gen.sbatch`/`eval.sbatch` set all three; `prep.sbatch` sets none and says it needs Hub access. Smallest reversible choice; the submit forms and placeholder list above are the contract.
+- T4.2 eval file naming: `results/<run_id>/eval/step_<n>.json`, `<n>` = completed training step zero-padded to six digits (same convention as `ckpt/step_<n>.pt` and `samples/step_<n>.txt`). Per-seed shards are `step_<n>.seed_<i>.json`; `--merge` folds them into the aggregate.
+- T4.2 milestone checkpoints: `ckpt/milestone_<pct>.pt` at `round(fraction * max_steps)` clamped to `1..max_steps`, for fractions `[0.10, 0.25, 0.50, 1.0]`, behind `generator.train.save_milestones` (default true). Two fractions rounding to one step share it (first keeps it); 100% coincides with the last periodic checkpoint.
+- T4.2 eval rebuilds the generator from the checkpoint's saved `config`; `--config` must still agree on L, V, head, quantizer and K. This is what lets a smoke run trained with overridden H/n_layers be evaluated from `configs/smoke.yaml`.
+- T4.2 plot input: TASKS says `results/**/metrics.jsonl`, the task deliverable says `results/**/eval/*.json`; the script reads aggregate eval JSON and skips per-seed shards. The entropy panel plots dataset-token H solid and GPT-2-token H dashed; the diversity panel plots `pairwise_agree` solid and `unique_frac` dashed; x is `total_positions`, falling back to `gen_positions + tok_positions` (SPEC 6.2 offset).
+- T4.2 `eval.sbatch`: one array task per seed (`--seeds $SLURM_ARRAY_TASK_ID`) writing shards; the header documents the `--merge` step. `#SBATCH --array=0-4` is a placeholder kept in sync with `N_SEEDS=5`.
 
 ## Human must fill / do
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
@@ -270,7 +301,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
   - Venv: all three source `.venv/bin/activate` at the repo root and exit 1 if it is absent (TODO at `prep.sbatch:9`, `tok.sbatch:12`, `gen.sbatch:12`); create it per "Environment" below or edit the path.
   - `prep.sbatch` must reach the Hugging Face Hub (internet-enabled partition or a login node): it deliberately does not set `HF_*_OFFLINE` (Q9). `tok.sbatch` and `gen.sbatch` set all three offline variables.
   - Submit forms (all from the repo root): `sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" scripts/slurm/prep.sbatch`; `... --export=ALL,QUANT=vq scripts/slurm/tok.sbatch` (then `QUANT=noisy`); `... --export=ALL,HEAD=ce,RUN_ID=gen_vq_ce_dev TOKENIZER=results/tok_vq_dev/ckpt/latest.pt scripts/slurm/gen.sbatch` (and `HEAD=regress|flow` with the `noisy` tokenizer).
-  - Not yet provided: `scripts/slurm/eval.sbatch` (T4.2). These three scripts have no `--array` seed sweep; a run's seed comes from `seed:` in the config and eval-time seed sweeps arrive with T4.2.
+  - **T4.2 `eval.sbatch` placeholders:** wall clock (`--time=HH:MM:SS`, TODO), array range (`--array=0-4`, TODO, keep equal to `N_SEEDS`), GPU type (`--gres=gpu:1`, TODO), modules (TODO), venv (sources `.venv/bin/activate`, TODO). Submit form: `sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" --export=ALL,RUN_ID=gen_vq_ce_dev TOKENIZER=results/tok_vq_dev/ckpt/latest.pt scripts/slurm/eval.sbatch`, then `python scripts/run_eval.py --run_id gen_vq_ce_dev --merge` and `python scripts/plot_curves.py`.
 
 ## Environment
 - Python / torch: Python 3.13.7, torch 2.15.0+cpu (CUDA unavailable on this host); numpy 2.5.4, pytest 9.2.0.
@@ -294,8 +325,8 @@ Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Next 3 steps
 1. Human: copy `data/tinystories/` and `models/gpt2-large/` to FIR, then run Gate G0a (dev `vq` and `noisy` tokenizers) and G0.
-2. T4.2 (`scripts/run_eval.py`, `scripts/plot_curves.py`, and `scripts/slurm/eval.sbatch`, which moved here from T4.1).
-3. T4.3 (`RUNBOOK.md`): fill the wall-clock fields using the real limits chosen above.
+2. T4.3 (`RUNBOOK.md`): fill the wall-clock fields using the real limits chosen above.
+3. After G0: real generator runs, then `eval.sbatch` per run, `--merge`, and `scripts/plot_curves.py`.
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.

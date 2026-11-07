@@ -325,6 +325,29 @@ def run_diagnostics(
     return record
 
 
+def milestone_steps(
+    max_steps: int, fractions: list[float]
+) -> dict[int, float]:
+    """Map 1-based completed-step numbers to milestone fractions (T4.2).
+
+    Each fraction becomes ``round(fraction * max_steps)`` clamped to
+    ``[1, max_steps]``. When two fractions round to the same step the first
+    one keeps it, so the saved file is never overwritten twice per step.
+    """
+    if max_steps < 1:
+        raise ValueError(f"max_steps must be >= 1, got {max_steps}")
+    if not fractions:
+        raise ValueError("milestones must contain at least one fraction")
+    steps: dict[int, float] = {}
+    for fraction in fractions:
+        value = float(fraction)
+        if not 0.0 < value <= 1.0:
+            raise ValueError(f"milestone fraction must be in (0, 1], got {fraction}")
+        step = min(max_steps, max(1, int(round(value * max_steps))))
+        steps.setdefault(step, value)
+    return steps
+
+
 def train(
     cfg: Config,
     tokenizer_ckpt: str | Path,
@@ -417,6 +440,12 @@ def train(
         f"for {gen_train.max_steps} steps on {device}..."
     )
 
+    milestones = (
+        milestone_steps(gen_train.max_steps, gen_train.milestones)
+        if gen_train.save_milestones
+        else {}
+    )
+
     recent_loss = 0.0
     recent_per_level = [0.0] * tokenizer.K
     for step in range(start_step, gen_train.max_steps):
@@ -474,7 +503,9 @@ def train(
                 line += f" | Gen PPL: {metrics['gen_ppl']:.2f}"
             print(line)
 
-        if (step + 1) % gen_train.save_every == 0 or is_last:
+        milestone = milestones.get(step + 1)
+        is_periodic = (step + 1) % gen_train.save_every == 0 or is_last
+        if is_periodic or milestone is not None:
             state = {
                 "step": step,
                 "backbone": backbone.state_dict(),
@@ -484,8 +515,14 @@ def train(
                 "gen_positions": gen_positions,
                 "tok_positions": tok_positions,
             }
-            torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
-            torch.save(state, ckpt_dir / "latest.pt")
+            if milestone is not None:
+                torch.save(
+                    {**state, "milestone": milestone},
+                    ckpt_dir / f"milestone_{round(milestone * 100):03d}.pt",
+                )
+            if is_periodic:
+                torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
+                torch.save(state, ckpt_dir / "latest.pt")
 
     print(f"Training completed. Results written to {run_dir}")
     return run_dir
