@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-07 (T4.2 complete: batched GPT-2 scoring, eval and plot scripts, eval.sbatch; full suite 147 passed)
+Last updated: 2026-11-07 (G0a tokenizer reconciliation on FIR: 24 h job cancelled, `tok_vq_10k`/`tok_noisy_10k` submitted as 4 h / 10,000-step jobs)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -12,6 +12,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - T4.2 milestone checkpoints: the generator trainer writes `ckpt/milestone_<pct>.pt` at 10/25/50/100% of the budget when `generator.train.save_milestones` is on (default), and `run_eval.py` evaluates exactly those by default.
 - T0.2 real data prep and the T1.2 protocol gate are now verified locally on real TinyStories data; `models/gpt2-large` is present in `models/gpt2-large`.
 - Gate G0a is next (cluster, human): copy `data/tinystories/` and `models/gpt2-large/` to FIR first.
+- G0a tokenizer jobs (2026-11-07): 24 h pending job 2800220 cancelled; `tok_vq_10k` = job 2880034 and `tok_noisy_10k` = job 2880035 submitted (4 h, 10,000 steps each, PENDING at submit time).
 
 ## VERIFIED (command + last lines of output)
 
@@ -60,7 +61,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - FIR requires an explicit GPU model: `gpu:h100` exists (`sinfo -o "%G"` shows `gpu:h100:4(S:2-3)`), so `tok.sbatch` now requests `--gres=gpu:h100:1`; a generic `--gres=gpu:1` is rejected at submit time.
 - Venv on FIR: `module load python/3.12` (3.12.4), `virtualenv --no-download .venv`, `pip install --no-index torch numpy pyyaml` -> torch 2.14.1+computecanada, numpy 2.5.3, pyyaml 6.0.3.
 - Smoke: `python -m jncm.train_tokenizer --config configs/smoke.yaml --steps 5 --set L=128 --set V=8192 --run_id smoke_g0a` -> 5 steps, real data, exit 0. (The first attempt failed loudly as designed: real meta L=128 vs smoke config L=32.)
-- Pilot submission: `sbatch --account=def-cheng23 --gres=gpu:h100:1 --time=00:20:00 --export=ALL,QUANT=vq,STEPS=500,RUN_ID=pilot_vq scripts/slurm/tok.sbatch` -> job 2796353 (partition `gpubase_b`). After 30 polls over about 25 minutes it was still `PD (Priority)`; polling stopped per the run plan.
+- Pilot submission: `sbatch --account=def-cheng23 --gres=gpu:h100:1 --time=00:20:00 --export=ALL,QUANT=vq,STEPS=500,RUN_ID=pilot_vq scripts/slurm/tok.sbatch` -> job 2796353 (partition `gpubase_b`). It later ran on 2026-11-07 and `COMPLETED` in `00:09:05` (sacct); see "G0a tokenizer reconciliation" below.
 - `scripts/g0a_report.py` added: reads `results/tok_vq_dev|tok_noisy_dev/metrics.jsonl`, prints step, `acc_full`, rounded `acc_cum`, SPEC 4.5 diagnostics, and PASS/FAIL vs 0.999 (vq) / 0.995 (noisy) on the final record, requiring `data_source=real`. Checked on fabricated temp metrics (pass -> exit 0, below-threshold -> exit 1); no result numbers were written to `results/`.
 
 ### G0a FIR operation notes (zellij control)
@@ -71,7 +72,19 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Account `def-cheng23_` is rejected ("You may not be a member"); use `def-cheng23`. Generic `--gres=gpu:1` is rejected; `--gres=gpu:h100:1` is accepted and Slurm selects partition `gpubase_b`.
 - Venv: `module load python/3.12`, `virtualenv --no-download .venv`, `pip install --no-index torch numpy pyyaml`; smoke `--config configs/smoke.yaml --steps 5 --set L=128 --set V=8192` (real data wins over the smoke L=32 and fails loudly on mismatch).
 - FIR channel proven through the zellij pane (`hostname -f` = `login2.int.fir.alliancecan.ca`). `ssh -o BatchMode=yes` from this host is denied (publickey,keyboard-interactive), so every new ssh/rsync needs human MFA.
-- G0a numbers: not run yet (no pilot, no full runs).
+- G0a numbers: not run yet (pilot 2796353 completed its 500 steps; no full runs).
+
+### G0a tokenizer reconciliation — VERIFIED 2026-11-07 (zellij `attach`, pane `terminal_0`)
+- Channel proof: `hostname -f; echo ZNCM-7f31-QP` -> `login1.int.fir.alliancecan.ca` and `ZNCM-7f31-QP`; `echo ACC=$SBATCH_ACCOUNT` -> `ACC=def-cheng23`. The zellij pane sits on `login1` this session (the notes above say `login2`; the ssh target is still `aefad@fir.alliancecan.ca`). No account literal was typed.
+- Inventory before acting: `squeue -u $USER -o "%.10i %.22j %.8T %.10M %.12l"` -> the only `jncm_tok` row was `2800220 ... PENDING 0:00 1-00:00:00`; the other 14 rows are `nr-league-v1-*` / `nr-train` jobs from another project and were left untouched. `sacct -S today -u $USER --format=JobID,JobName%22,State,Elapsed,Timelimit,WorkDir%40` -> `2796353 jncm_tok COMPLETED 00:09:05 00:20:00 /home/aefad/jncm` and `2800220 jncm_tok PENDING 00:00:00 1-00:00:00 /home/aefad/jncm`; 9 job rows today, 2 ours, none RUNNING.
+- Cancellation (the 24 h pending job): `scancel 2800220` -> `SCANCEL=0`; `squeue -u $USER -n jncm_tok` then printed only its header.
+- No run-id collision: `ls results/tok_vq_10k/ckpt/latest.pt results/tok_noisy_10k/ckpt/latest.pt` -> `No such file or directory` for both.
+- The remote `scripts/slurm/tok.sbatch` is the pre-h100 copy (`#SBATCH --gres=gpu:1`), so both submits pass `--gres=gpu:h100:1` on the command line, exactly as pilot 2796353 did; the file on FIR was not edited.
+- Submissions, from `~/jncm` (the account comes from `$SBATCH_ACCOUNT`):
+  `sbatch --account=$SBATCH_ACCOUNT --gres=gpu:h100:1 --time=04:00:00 --export=ALL,QUANT=vq,STEPS=10000,RUN_ID=tok_vq_10k scripts/slurm/tok.sbatch` -> `Submitted batch job 2880034`
+  `... --export=ALL,QUANT=noisy,STEPS=10000,RUN_ID=tok_noisy_10k ...` -> `Submitted batch job 2880035`
+- Scheduler record: `scontrol show job 2880034|2880035` -> `Account=def-cheng23_gpu`, `TimeLimit=04:00:00`, `ReqTRES=cpu=6,mem=32000M,node=1,billing=12200,gres/gpu=1,gres/gpu:h100=1`, `WorkDir=/home/aefad/jncm`, SubmitLine carrying `QUANT`/`STEPS`/`RUN_ID`; `squeue -u $USER -n jncm_tok -o "%.8i %.8T %.10M %.12l"` -> `2880034 PENDING 0:00 4:00:00` / `2880035 PENDING 0:00 4:00:00`.
+- Status: the submissions are VERIFIED; the runs are UNVERIFIED (PENDING, not polled after submit by design). At the pilot's 500 steps in `00:09:05` wall (startup included), a 4 h limit covers roughly 2.5-3k steps, so neither job finishes the 10,000-step budget in one wall clock; resubmitting the same command resumes from `results/<run_id>/ckpt/latest.pt`.
 
 ### T4.1 Slurm templates — prep, tok, gen (eval moved to T4.2)
 - One command, `set -o pipefail`, from the repo root: `bash -n` on each script, then the full suite.
@@ -195,6 +208,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 2. **Keep the learned QKV/output projections and delete old smoke checkpoints.** All pre-existing `.pt` files under `results/` were deleted; only checkpoints from the current architecture remain (`results/tok_vq_t24`). Old Gemini/pre-QKV checkpoints are not loadable.
 3. **Level schedule uses the exact half-up integer formula** `l_k = 1 + (2*(k-1)*(L-1) + (K-1)) // (2*(K-1))` (SPEC 2 / v1.2, F10). No Python `round`.
 4. **Q8 resolved: keep SPEC 5.1 and the deterministic `regress` head.** Level 1 has one position and zero conditioning, so a deterministic head can only emit one code. The old 8-sequence unconditional acceptance was an invalid test, not a model bug. T3.5 now accepts (a) one unconditional fixed sequence at >= 0.90 and (b) the true level-1 code supplied, sampling levels 2..K, all 8 sequences at >= 0.90. SPEC 5.1 and the regress head are unchanged.
+5. **G0a tokenizer budget cut to 10,000 steps (allocation saving, 2026-11-07).** The dev tokenizers run as `tok_vq_10k` (job 2880034) and `tok_noisy_10k` (job 2880035) with `STEPS=10000` and `--time=04:00:00` instead of the 40,000-step SPEC 4.4 dev budget; the 24 h `jncm_tok` job 2800220 was cancelled. SPEC 4.4 and the G0a thresholds are unchanged (`acc_full` >= 0.999 vq / 0.995 noisy on `data_source=real`, checked by `scripts/g0a_report.py` on the final record); these two runs are the budget-limited pair the gate is judged on.
 
 ## Files touched in T0.2 / T1.2 (verification only)
 - Docs: `docs/STATE.md`, `docs/TASKS.md`. No code changes; `data/tiny_test` was generated by the existing prep script, and `results/t1_2_protocol_gate.json` is the gate record (both git-ignored).
@@ -260,6 +274,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 8. The working tree carries two uncommitted edits from an earlier session (`tests/test_review_fixes.py`, `tests/test_train_tokenizer.py` pass an explicit temporary `data_dir` to `train`). They are unrelated to T3.5 and were left uncommitted; the suite passes with them in place.
 9. T3.5 acceptance is blocked for `regress` (Q8): level 1 is conditioned on `zhat_0 = 0` only, so the deterministic regression head predicts the batch mean level-1 code and cannot emit 8 distinct sequences. The arm is `xfail(strict=True)`; T3.5 stays un-ticked pending a researcher decision.
 10. The slow acceptance takes about 2 minutes on CPU (mostly the flow arm), so `pytest -x -q` now takes about 2.5 minutes. `pytest -m "not slow"` is the fast loop.
+11. FIR `~/jncm` is not a git repository (`git log` -> `fatal: not a git repository`); the tree was extracted from the tar, so cluster runs cannot write a real `git_sha.txt`. Compare cluster results against the local commit recorded here. The remote `scripts/slurm/tok.sbatch` is also the pre-h100 copy (`--gres=gpu:1`), so pass `--gres=gpu:h100:1` on the command line.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
