@@ -73,7 +73,13 @@ def test_train_tokenizer_smoke_vq(tmp_path: Path) -> None:
 
     run_dir = tmp_path / "smoke_vq_run"
     results_dir = tmp_path / "results"
-    train(cfg=cfg, max_steps=10, run_id=str(run_dir.name), results_dir=results_dir)
+    train(
+        cfg=cfg,
+        max_steps=10,
+        run_id=str(run_dir.name),
+        results_dir=results_dir,
+        data_dir=tmp_path / "no_real_data",
+    )
 
     out_dir = results_dir / run_dir.name
     assert out_dir.exists()
@@ -108,7 +114,13 @@ def test_train_tokenizer_smoke_noisy(tmp_path: Path) -> None:
 
     run_dir = tmp_path / "smoke_noisy_run"
     results_dir = tmp_path / "results"
-    train(cfg=cfg, max_steps=10, run_id=str(run_dir.name), results_dir=results_dir)
+    train(
+        cfg=cfg,
+        max_steps=10,
+        run_id=str(run_dir.name),
+        results_dir=results_dir,
+        data_dir=tmp_path / "no_real_data",
+    )
 
     out_dir = results_dir / run_dir.name
     assert out_dir.exists()
@@ -137,7 +149,13 @@ def test_train_tokenizer_resume(tmp_path: Path) -> None:
     run_name = f"resume_test_{tmp_path.name}"
     results_dir = tmp_path / "results"
     # Train 5 steps
-    train(cfg=cfg, max_steps=5, run_id=run_name, results_dir=results_dir)
+    train(
+        cfg=cfg,
+        max_steps=5,
+        run_id=run_name,
+        results_dir=results_dir,
+        data_dir=tmp_path / "no_real_data",
+    )
 
     ckpt_path = results_dir / run_name / "ckpt" / "latest.pt"
     assert ckpt_path.exists()
@@ -149,6 +167,7 @@ def test_train_tokenizer_resume(tmp_path: Path) -> None:
         run_id=run_name,
         resume_path=ckpt_path,
         results_dir=results_dir,
+        data_dir=tmp_path / "no_real_data",
     )
 
     logger = JSONLLogger(results_dir / run_name / "metrics.jsonl")

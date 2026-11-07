@@ -139,7 +139,13 @@ def test_f8_train_writes_under_results_dir(tmp_path: Path) -> None:
     cfg.device = "cpu"
 
     results_dir = tmp_path / "custom_results"
-    train(cfg=cfg, max_steps=2, run_id="f8_run", results_dir=results_dir)
+    train(
+        cfg=cfg,
+        max_steps=2,
+        run_id="f8_run",
+        results_dir=results_dir,
+        data_dir=tmp_path / "no_real_data",
+    )
 
     run_dir = results_dir / "f8_run"
     assert (run_dir / "config.yaml").exists()
