@@ -41,7 +41,16 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - FIR requires an explicit GPU model: `gpu:h100` exists (`sinfo -o "%G"` shows `gpu:h100:4(S:2-3)`), so `tok.sbatch` now requests `--gres=gpu:h100:1`; a generic `--gres=gpu:1` is rejected at submit time.
 - Venv on FIR: `module load python/3.12` (3.12.4), `virtualenv --no-download .venv`, `pip install --no-index torch numpy pyyaml` -> torch 2.14.1+computecanada, numpy 2.5.3, pyyaml 6.0.3.
 - Smoke: `python -m jncm.train_tokenizer --config configs/smoke.yaml --steps 5 --set L=128 --set V=8192 --run_id smoke_g0a` -> 5 steps, real data, exit 0. (The first attempt failed loudly as designed: real meta L=128 vs smoke config L=32.)
-- Pilot submission: `sbatch --account=def-cheng23 --gres=gpu:h100:1 --time=00:20:00 --export=ALL,QUANT=vq,STEPS=500,RUN_ID=pilot_vq scripts/slurm/tok.sbatch` -> job 2796353.
+- Pilot submission: `sbatch --account=def-cheng23 --gres=gpu:h100:1 --time=00:20:00 --export=ALL,QUANT=vq,STEPS=500,RUN_ID=pilot_vq scripts/slurm/tok.sbatch` -> job 2796353 (partition `gpubase_b`). After 30 polls over about 25 minutes it was still `PD (Priority)`; polling stopped per the run plan.
+- `scripts/g0a_report.py` added: reads `results/tok_vq_dev|tok_noisy_dev/metrics.jsonl`, prints step, `acc_full`, rounded `acc_cum`, SPEC 4.5 diagnostics, and PASS/FAIL vs 0.999 (vq) / 0.995 (noisy) on the final record, requiring `data_source=real`. Checked on fabricated temp metrics (pass -> exit 0, below-threshold -> exit 1); no result numbers were written to `results/`.
+
+### G0a FIR operation notes (zellij control)
+- Send: `zellij --session attach action write-chars -p terminal_0 '<cmd>'` then `zellij --session attach action send-keys -p terminal_0 Enter`. After a while `action write 10`/`13` stopped submitting the line; `send-keys Enter` kept working.
+- Read: `zellij --session attach action dump-screen -p terminal_0 -f --path <file>`. Without `-p terminal_0` the dump came from a blank/plugin pane; even the right pane pads the viewport with empty lines, so filter to non-empty lines before `tail`.
+- A long (~210 char) submit line lost the space between `RUN_ID=pilot_vq` and the script path once (`RUN_ID=pilot_vqscripts/slurm/tok.sbatch`); always read the echoed command on screen after long submits.
+- Transfer: `ssh -o BatchMode=yes aefad@fir.alliancecan.ca true` is denied, so the human ran `scp <repo tar> aefad@fir.alliancecan.ca:jncm_agent/` (944,109,056 bytes); extraction was `mkdir -p ~/jncm && tar -xf ~/jncm_agent/jncm_g0a.tar -C ~/jncm`. The tar is still at `~/jncm_agent/jncm_g0a.tar` (no `rm` was run).
+- Account `def-cheng23_` is rejected ("You may not be a member"); use `def-cheng23`. Generic `--gres=gpu:1` is rejected; `--gres=gpu:h100:1` is accepted and Slurm selects partition `gpubase_b`.
+- Venv: `module load python/3.12`, `virtualenv --no-download .venv`, `pip install --no-index torch numpy pyyaml`; smoke `--config configs/smoke.yaml --steps 5 --set L=128 --set V=8192` (real data wins over the smoke L=32 and fails loudly on mismatch).
 - FIR channel proven through the zellij pane (`hostname -f` = `login2.int.fir.alliancecan.ca`). `ssh -o BatchMode=yes` from this host is denied (publickey,keyboard-interactive), so every new ssh/rsync needs human MFA.
 - G0a numbers: not run yet (no pilot, no full runs).
 
