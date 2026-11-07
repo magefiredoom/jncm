@@ -8,8 +8,8 @@ Work on the first unchecked task. One task per session unless told otherwise.
 
 - [x] **T0.1 Skeleton.** Package `jncm/` with `config.py` (dataclasses, YAML loader, `--set a.b=c` overrides), `utils.py` (seeding, JSONL logger, `bits_per_position`), `configs/smoke.yaml`, `configs/tinystories_dev.yaml`, `requirements.txt`, `pytest.ini`, `.gitignore` (data/, results/, models/, *.pt).
   Accept: `pytest -q` passes, including a config round-trip test (YAML -> dataclass -> YAML) and an override test. — PASSED 2026-11-06 (bare `pytest -q`: 64 passed; root `pytest.ini`, `requirements.txt`, `pyproject.toml`).
-- [ ] **T0.2 Data prep script.** `scripts/prep_tinystories.py` per SPEC section 3, with `--max_stories` for tests.
-  Accept: `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` writes `train.bin`, `val.bin`, `meta.json`, `tokenizer.json` (needs internet; run on a login node or laptop). A test with a tiny local text fixture checks packing: windows are exactly L tokens, `<eos>` separates stories, nothing overlaps. — Packing/streaming (`WindowPacker`) tests pass; real prep not run (no network).
+- [x] **T0.2 Data prep script.** `scripts/prep_tinystories.py` per SPEC section 3, with `--max_stories` for tests.
+  Accept: `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` writes `train.bin`, `val.bin`, `meta.json`, `tokenizer.json` (needs internet; run on a login node or laptop). A test with a tiny local text fixture checks packing: windows are exactly L tokens, `<eos>` separates stories, nothing overlaps. — PASSED 2026-11-07 (`data/tinystories`: train 3,647,424 / val 36,658 windows, L 128, V 8192, bin sizes 933,740,544 / 9,384,448 bytes match meta; max token id 8191 in both bins, first/last 1e6 tokens; two val windows decode to English; `python scripts/prep_tinystories.py --max_stories 2000 --out data/tiny_test` -> 3,210 train / 637 val windows, sizes match; `pytest -q tests/test_data_prep.py tests/test_eval_data_row.py tests/test_genppl.py` -> 13 passed).
 - [x] **T0.3 Data loader.** `jncm/data.py`: memmap dataset and infinite seeded batch iterator returning LongTensor [B, L]; helper that counts positions seen.
   Accept: tests for shapes, determinism under a fixed seed, and train/val disjointness. — PASSED 2026-11-06.
 
@@ -17,8 +17,8 @@ Work on the first unchecked task. One task per session unless told otherwise.
 
 - [x] **T1.1 Gen PPL and entropy.** `jncm/eval/genppl.py`: `gen_ppl(texts, scorer)`, `unigram_entropy(token_id_lists)`, `GPT2Scorer` (local path from `$GPT2_LARGE_PATH`, offline), plus `scripts/fetch_models.py` (login node) to download gpt2-large.
   Accept: tests use a fake scorer (no download). Check entropy of a uniform distribution over n distinct tokens equals ln n, and a perplexity case with known NLLs. — PASSED 2026-11-06 (fake-scorer tests; real GPT-2 path unverified).
-- [ ] **T1.2 Protocol gate on real data.** `scripts/eval_data_row.py` decodes N real validation sequences and reports Gen PPL and H.
-  Accept (human runs it): about 9.67 PPL and about 3.96 H (SPEC 6.1). Record the numbers in STATE.md. If outside tolerance, write a diagnosis in docs/QUESTIONS.md; do not tune the metric toward the numbers.
+- [x] **T1.2 Protocol gate on real data.** `scripts/eval_data_row.py` decodes N real validation sequences and reports Gen PPL and H.
+  Accept (human runs it): about 9.67 PPL and about 3.96 H (SPEC 6.1). Record the numbers in STATE.md. If outside tolerance, write a diagnosis in docs/QUESTIONS.md; do not tune the metric toward the numbers. — PASSED 2026-11-07 (`GPT2_LARGE_PATH=models/gpt2-large python scripts/eval_data_row.py --data data/tinystories/val.bin --tokenizer data/tinystories/tokenizer.json --gpt2 models/gpt2-large --n_samples 256 --out results/t1_2_protocol_gate.json`: Gen PPL 10.80 +/- 0.26 in [8.22, 11.12]; H GPT-2 tokens 4.03 +/- 0.01 and dataset tokens 4.03 +/- 0.01 in [3.81, 4.11]; script verdict PASS).
 
 ## M2 — Tokenizer
 
