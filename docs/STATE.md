@@ -14,6 +14,16 @@ Rule: newest information wins. Rewrite sections; do not append history.
 
 ## VERIFIED (command + last lines of output)
 
+### G0a cluster run — in progress (2026-11-07)
+- Local tree: `git status` clean after committing `AGENTS.md` (FIR operator rules); one empty untracked `docs/test.py` remains.
+- Fast suite: `.\.venv\Scripts\python.exe -m pytest -q -m "not slow"`
+  `122 passed, 4 deselected in 19.36s`  (EXIT=0)
+- Real data already present: `data/tinystories/{train,val}.bin` + `tokenizer.json` + `meta.json`; meta `train_windows 3647424`, `val_windows 36658`, `L 128`, `V 8192`. `scripts/prep_tinystories.py` was not re-run.
+- `scripts/slurm/tok.sbatch` placeholders filled: `--time=12:00:00` (template default, overridden per submit), `--cpus-per-task=6`, `--mem=32000M`, `module load python/3.12`, venv `.venv` unchanged; optional `STEPS` / `RUN_ID` overrides (`RUN_ID` defaults to `tok_<quant>_dev`, `STEPS` unset = config budget). `bash -n` (Git bash) exit 0.
+- FIR target (from user): host `login2.int.fir.alliancecan.ca`, user `aefad`, repo `~/jncm`, account `def-cheng23_`, python module `python/3.12`, no partition flag.
+- FIR channel proven through the zellij pane (`hostname -f` = `login2.int.fir.alliancecan.ca`). `ssh -o BatchMode=yes` from this host is denied (publickey,keyboard-interactive), so every new ssh/rsync needs human MFA.
+- G0a numbers: not run yet (no pilot, no full runs).
+
 ### T4.1 Slurm templates — prep, tok, gen (eval moved to T4.2)
 - One command, `set -o pipefail`, from the repo root: `bash -n` on each script, then the full suite.
   `bash -n scripts/slurm/prep.sbatch exit=0`

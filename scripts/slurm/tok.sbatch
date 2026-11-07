@@ -2,21 +2,24 @@
 #SBATCH --job-name=jncm_tok
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=32000M
 #SBATCH --gres=gpu:1
-#SBATCH --time=HH:MM:SS
-# TODO(placeholder): wall clock -- replace HH:MM:SS above before submitting.
-# TODO(placeholder): GPU type -- --gres=gpu:1 asks for one generic GPU; add a
-#   type (for example gpu:A100:1) only if your FIR partition requires it.
-# TODO(placeholder): modules -- add 'module load ...' lines if your cluster
-#   needs them. None are guessed here.
-# TODO(placeholder): venv -- this script sources .venv/bin/activate at the repo
-#   root (docs/STATE.md, Environment). Change the path if yours differs.
+#SBATCH --time=12:00:00
+# Wall clock above is a template default; override it on the command line
+# (the 500-step pilot uses --time=00:20:00, the full runs use the measured
+# limit). GPU type: --gres=gpu:1 asks for one generic GPU on FIR's default
+# partition; no type is pinned, so an H100 is acceptable.
+# Modules: FIR supplies python 3.12 through the module system.
+# Venv: .venv/bin/activate at the repo root (docs/STATE.md, Environment).
 #
 # Train one dev tokenizer variant to the full dev budget (SPEC 4.4/4.5):
 #   sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" \
 #          --export=ALL,QUANT=vq scripts/slurm/tok.sbatch
 #   sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" \
 #          --export=ALL,QUANT=noisy scripts/slurm/tok.sbatch
+# Optional overrides (defaults are unchanged: tok_<quant>_dev, config steps):
+#   --export=ALL,QUANT=vq,RUN_ID=pilot_vq,STEPS=500
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -48,6 +51,7 @@ if [[ ! -f jncm/train_tokenizer.py ]]; then
 fi
 
 # Cluster environment from docs/STATE.md "Environment".
+module load python/3.12
 if [[ ! -f .venv/bin/activate ]]; then
   echo "ERROR: .venv/bin/activate not found; create the cluster venv (docs/STATE.md)" >&2
   exit 1
@@ -60,7 +64,7 @@ export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export PYTHONUNBUFFERED=1
 
-run_id="tok_${QUANT}_dev"
+run_id="${RUN_ID:-tok_${QUANT}_dev}"
 ckpt="results/${run_id}/ckpt/latest.pt"
 
 cmd=(
@@ -69,6 +73,9 @@ cmd=(
   --set "tokenizer.quantizer=${QUANT}"
   --run_id "${run_id}"
 )
+if [[ -n "${STEPS:-}" ]]; then
+  cmd+=(--steps "${STEPS}")
+fi
 
 if [[ -f "${ckpt}" ]]; then
   echo "Resuming ${run_id} from ${ckpt}"
