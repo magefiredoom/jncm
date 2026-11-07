@@ -1,20 +1,37 @@
 # STATE — jncm
 
-Last updated: 2026-11-07 (G0a tokenizer reconciliation on FIR: 24 h job cancelled, `tok_vq_10k`/`tok_noisy_10k` submitted as 4 h / 10,000-step jobs)
+Last updated: 2026-11-07 (T4.3 `RUNBOOK.md` added; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M2 complete; **T2.4, T3.1, T3.2, T3.3, T3.4, T3.5, T4.1, T4.2, T0.2, T1.2 complete**; next task **T4.3** (RUNBOOK), with G0a/G0 still human-run on FIR.
-- Last completed task: T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
+- Milestone / task in progress: M0–M4 tasks complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, **T4.3**); next agent task **T5.1** (EMA). Gates G0a/G0/G1 are still human-run on FIR.
+- Last completed task: T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`. Before that, T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
 - T3.5 acceptance passes as written in TASKS.md: `ce` and `flow` memorise 8 sequences; `regress` memorises one unconditional sequence and, with the true level-1 code supplied, reproduces all 8 sequences when sampling levels 2..K.
 - All four Slurm templates now exist (`prep`, `tok`, `gen`, `eval`); `eval.sbatch` evaluates the milestone checkpoints with one array task per seed.
 - T4.2 milestone checkpoints: the generator trainer writes `ckpt/milestone_<pct>.pt` at 10/25/50/100% of the budget when `generator.train.save_milestones` is on (default), and `run_eval.py` evaluates exactly those by default.
 - T0.2 real data prep and the T1.2 protocol gate are now verified locally on real TinyStories data; `models/gpt2-large` is present in `models/gpt2-large`.
-- Gate G0a is next (cluster, human): copy `data/tinystories/` and `models/gpt2-large/` to FIR first.
-- G0a tokenizer jobs (2026-11-07): 24 h pending job 2800220 cancelled; `tok_vq_10k` = job 2880034 and `tok_noisy_10k` = job 2880035 submitted (4 h, 10,000 steps each, PENDING at submit time).
+- Gate G0a is next (cluster, human): sync the FIR tree and copy `data/tinystories/` + `models/gpt2-large/` first (`RUNBOOK.md` §1).
+- G0a tokenizer jobs (2026-11-07): the 24 h pending job 2800220 was cancelled; the submitted pair is in **FIR jobs** below.
+
+## FIR jobs
+
+| Job ID | Run ID | STEPS | Time limit | State |
+| --- | --- | --- | --- | --- |
+| 2880034 | `tok_vq_10k` | 10,000 | 04:00:00 | PENDING at submit (not polled since) |
+| 2880035 | `tok_noisy_10k` | 10,000 | 04:00:00 | PENDING at submit (not polled since) |
+
+Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither 10k job had been polled when this table was written, so their state is UNVERIFIED beyond the submit record.
 
 ## VERIFIED (command + last lines of output)
+
+### T4.3 runbook — VERIFIED 2026-11-07
+- `.venv/Scripts/python.exe -m pytest -q -m "not slow"`
+  `143 passed, 4 deselected in 22.26s`  (EXIT=0)
+- Both paste-back snippets in `RUNBOOK.md` §4.2 and §4.4 were run verbatim on throwaway fixtures under `.tmp_runbook/` (deleted afterwards; nothing written to `results/`): the tokenizer dump printed `step 10000 acc_full 0.9994 ... data_source real` then `PASS vs 0.999`; the eval dump printed `step 100 total_positions 12345678 ppl 18.400 std 0.500 ppl/10.80 1.704 h_gpt2 3.910 h-4.03 -0.120` and `n/a` for a record without `ppl`.
+- Wall-clock audit: `SBATCH_LINES=8 WITHOUT_WALL=0 WALL_FIELDS=10` — every `sbatch` submit line in `RUNBOOK.md` carries `--time=<WALL_CLOCK>`, and no wall clock is guessed.
+- Runbook commands are taken from the four `scripts/slurm/*.sbatch` files and the CLIs: `gen.sbatch`/`eval.sbatch` take `HEAD`/`RUN_ID`/`TOKENIZER` (passed via `--export=ALL,...`), `eval.sbatch` uses `--array=0-4`, `run_eval.py --merge` needs only `--run_id`, `plot_curves.py` writes `curves.png`.
+- Limitation: `scripts/g0a_report.py` keys its thresholds on `tok_vq_dev`/`tok_noisy_dev`, so the 10k gate verdict uses the §4.2 record dump (KNOWN ISSUES 10); no code was changed in T4.3.
 
 ### T0.2 real data prep — VERIFIED 2026-11-07
 - `data/tinystories/meta.json`: `train_windows 3647424`, `val_windows 36658`, `L 128`, `V 8192`; `train.bin` 933,740,544 bytes = 3,647,424*128*2 and `val.bin` 9,384,448 bytes = 36,658*128*2.
@@ -246,6 +263,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Tests: `tests/test_genppl_batched.py`, `tests/test_run_eval.py`, `tests/test_plot_curves.py`, `tests/test_eval_sbatch.py` (new).
 - Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
 
+## Files touched in T4.3
+- `RUNBOOK.md` (new), `docs/STATE.md`, `docs/TASKS.md`. No code changes; no wall clock or metric is guessed (all `<WALL_CLOCK>`, reference row from the T1.2 gate).
+
 ## Files touched in T4.1
 - `scripts/slurm/prep.sbatch`, `scripts/slurm/tok.sbatch`, `scripts/slurm/gen.sbatch` (new), `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (Q9). No `eval.sbatch` — T4.2 owns it.
 
@@ -271,10 +291,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 5. `git_sha.txt` now ends in `-dirty` when the working tree has uncommitted changes.
 6. T0.2 and T1.2 were ticked 2026-11-07 after the real-data runs above; the earlier "not run" entries are superseded.
 7. `tok.sbatch` resumes from `results/<run_id>/ckpt/latest.pt`, which the trainer rewrites every `train.save_every` steps (5000 in the dev config), so a preempted job loses at most that many steps. Resume already does not restore the data iterator or RNG (item 2).
-8. The working tree carries two uncommitted edits from an earlier session (`tests/test_review_fixes.py`, `tests/test_train_tokenizer.py` pass an explicit temporary `data_dir` to `train`). They are unrelated to T3.5 and were left uncommitted; the suite passes with them in place.
-9. T3.5 acceptance is blocked for `regress` (Q8): level 1 is conditioned on `zhat_0 = 0` only, so the deterministic regression head predicts the batch mean level-1 code and cannot emit 8 distinct sequences. The arm is `xfail(strict=True)`; T3.5 stays un-ticked pending a researcher decision.
-10. The slow acceptance takes about 2 minutes on CPU (mostly the flow arm), so `pytest -x -q` now takes about 2.5 minutes. `pytest -m "not slow"` is the fast loop.
-11. FIR `~/jncm` is not a git repository (`git log` -> `fatal: not a git repository`); the tree was extracted from the tar, so cluster runs cannot write a real `git_sha.txt`. Compare cluster results against the local commit recorded here. The remote `scripts/slurm/tok.sbatch` is also the pre-h100 copy (`--gres=gpu:1`), so pass `--gres=gpu:h100:1` on the command line.
+8. The slow acceptance takes about 2 minutes on CPU (mostly the flow arm), so `pytest -x -q` now takes about 2.5 minutes. `pytest -m "not slow"` is the fast loop.
+9. FIR `~/jncm` is not a git repository (`git log` -> `fatal: not a git repository`); the tree was extracted from the tar, so cluster runs cannot write a real `git_sha.txt`. `RUNBOOK.md` §1.1 replaces it with a clone of the private remote; until then, compare cluster results against the local commit recorded here. The current remote `scripts/slurm/tok.sbatch` is also the pre-h100 copy (`--gres=gpu:1`), so pass `--gres=gpu:h100:1` on the command line.
+10. `scripts/g0a_report.py` hard-codes its thresholds on the `tok_vq_dev` / `tok_noisy_dev` run ids (`THRESHOLDS`), so it cannot read the 10k gate pair. `RUNBOOK.md` §4.2 prints the same fields and the 0.999/0.995 verdict for `tok_vq_10k`/`tok_noisy_10k`; the script was left unchanged (T4.3 is docs-only).
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
@@ -305,8 +324,8 @@ Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Human must fill / do
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
-- Before G0a/G0: copy `data/tinystories/` and `models/gpt2-large/` to FIR (rsync templates in the session report; T4.3 RUNBOOK will own them).
-- Run Gate G0a on a cluster GPU: dev tokenizers (`vq` and `noisy`); record exact-token accuracy.
+- Before G0a/G0: sync the FIR tree from the private remote and copy `data/tinystories/` + `models/gpt2-large/` (`RUNBOOK.md` §1.1/§1.2; every ssh/rsync asks for MFA).
+- Run Gate G0a on a cluster GPU: jobs 2880034/2880035 (`tok_vq_10k`/`tok_noisy_10k`, 10,000 steps, 4 h); record exact-token accuracy with `RUNBOOK.md` §4.2.
 - **T4.1 placeholders — every one of them (nothing is guessed in the scripts):**
   - Account: pass `--account="$SBATCH_ACCOUNT"` on the sbatch command line (or let your submit wrapper read `$SLURM_ACCOUNT`); no account appears in any of the three files.
   - Partition: pass `--partition="$SBATCH_PARTITION"` on the sbatch command line; no partition appears in any file.
@@ -315,8 +334,8 @@ Rule: newest information wins. Rewrite sections; do not append history.
   - Modules: no `module load` line exists (TODO at `prep.sbatch:7`, `tok.sbatch:10`, `gen.sbatch:10`). Add your site's.
   - Venv: all three source `.venv/bin/activate` at the repo root and exit 1 if it is absent (TODO at `prep.sbatch:9`, `tok.sbatch:12`, `gen.sbatch:12`); create it per "Environment" below or edit the path.
   - `prep.sbatch` must reach the Hugging Face Hub (internet-enabled partition or a login node): it deliberately does not set `HF_*_OFFLINE` (Q9). `tok.sbatch` and `gen.sbatch` set all three offline variables.
-  - Submit forms (all from the repo root): `sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" scripts/slurm/prep.sbatch`; `... --export=ALL,QUANT=vq scripts/slurm/tok.sbatch` (then `QUANT=noisy`); `... --export=ALL,HEAD=ce,RUN_ID=gen_vq_ce_dev TOKENIZER=results/tok_vq_dev/ckpt/latest.pt scripts/slurm/gen.sbatch` (and `HEAD=regress|flow` with the `noisy` tokenizer).
-  - **T4.2 `eval.sbatch` placeholders:** wall clock (`--time=HH:MM:SS`, TODO), array range (`--array=0-4`, TODO, keep equal to `N_SEEDS`), GPU type (`--gres=gpu:1`, TODO), modules (TODO), venv (sources `.venv/bin/activate`, TODO). Submit form: `sbatch --account="$SBATCH_ACCOUNT" --partition="$SBATCH_PARTITION" --export=ALL,RUN_ID=gen_vq_ce_dev TOKENIZER=results/tok_vq_dev/ckpt/latest.pt scripts/slurm/eval.sbatch`, then `python scripts/run_eval.py --run_id gen_vq_ce_dev --merge` and `python scripts/plot_curves.py`.
+  - Submit forms: `RUNBOOK.md` §2–§3 carries the exact, current ones (account, `--gres=gpu:h100:1`, `--time=<WALL_CLOCK>`, `HEAD`/`RUN_ID`/`TOKENIZER` inside `--export=ALL,...`). `prep.sbatch` is only needed if the data are ever rebuilt; the local `data/tinystories` is already prepared.
+  - **T4.2 `eval.sbatch` placeholders:** wall clock (`--time=HH:MM:SS`, TODO), array range (`--array=0-4`, TODO, keep equal to `N_SEEDS`), GPU type (`--gres=gpu:1`, TODO), modules (TODO), venv (sources `.venv/bin/activate`, TODO). Exact submit form plus the `--merge` and `plot_curves.py` steps: `RUNBOOK.md` §2.2 (Phase 1: §3).
 
 ## Environment
 - Python / torch: Python 3.13.7, torch 2.15.0+cpu (CUDA unavailable on this host); numpy 2.5.4, pytest 9.2.0.
@@ -339,9 +358,9 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Human: copy `data/tinystories/` and `models/gpt2-large/` to FIR, then run Gate G0a (dev `vq` and `noisy` tokenizers) and G0.
-2. T4.3 (`RUNBOOK.md`): fill the wall-clock fields using the real limits chosen above.
-3. After G0: real generator runs, then `eval.sbatch` per run, `--merge`, and `scripts/plot_curves.py`.
+1. Human: sync FIR (`RUNBOOK.md` §1), then wait for or resubmit jobs 2880034 (`tok_vq_10k`) and 2880035 (`tok_noisy_10k`) and judge G0a with `RUNBOOK.md` §4.2.
+2. Human: G0 with `HEAD=ce`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `RUN_ID=gen_vq_ce_dev`, then `eval.sbatch`/`--merge`/`plot_curves.py` (`RUNBOOK.md` §2.2).
+3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4; after G0 the agent can start T5.1 (EMA).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
