@@ -1,17 +1,22 @@
 #!/usr/bin/env python
 """Gate G0a report: exact-token accuracy of the two dev tokenizers.
 
-Reads ``results/<run_id>/metrics.jsonl`` for ``tok_vq_dev`` and
-``tok_noisy_dev`` and prints, for every evaluation record, the step,
-``acc_full``, the rounded ``acc_cum`` list and the SPEC 4.5 diagnostics
-(codebook usage/perplexity for vq; std/effective rank for noisy).
+Reads ``results/<run_id>/metrics.jsonl`` for the runs given by ``--runs``
+(default: the 10k gate pair ``tok_vq_10k tok_noisy_10k``) and prints, for every
+evaluation record, the step, ``acc_full``, the rounded ``acc_cum`` list and the
+SPEC 4.5 diagnostics (codebook usage/perplexity for vq; std/effective rank for
+noisy).
 
-The final record is checked against the G0a thresholds: 0.999 for vq and
-0.995 for noisy. A run that is missing, never evaluated, or whose final
-``data_source`` is not ``real`` fails.
+The final record is checked against the G0a threshold of the run's quantizer
+variant: 0.999 for vq and 0.995 for noisy. The variant comes from
+``results/<run_id>/config.yaml`` (``tokenizer.quantizer``) and falls back to the
+run id (``..._vq_...`` / ``..._noisy_...``). A run that is missing, never
+evaluated, of unknown variant, or whose final ``data_source`` is not ``real``
+fails.
 
 Usage:
-    python scripts/g0a_report.py [--results results] [--last]
+    python scripts/g0a_report.py [--results results]
+        [--runs tok_vq_10k tok_noisy_10k] [--last]
 """
 
 from __future__ import annotations
@@ -21,7 +26,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-THRESHOLDS = {"tok_vq_dev": 0.999, "tok_noisy_dev": 0.995}
+import yaml
+
+# G0a thresholds per quantizer variant (TASKS gate G0a: 0.999 vq / 0.995 noisy).
+THRESHOLDS = {"vq": 0.999, "noisy": 0.995}
+DEFAULT_RUNS = ["tok_vq_10k", "tok_noisy_10k"]
 
 
 def load_records(run_dir: Path) -> list[dict[str, Any]]:
@@ -38,6 +47,30 @@ def load_records(run_dir: Path) -> list[dict[str, Any]]:
     if not records:
         raise ValueError(f"{path} is empty")
     return records
+
+
+def run_variant(run_id: str, run_dir: Path) -> str:
+    """Quantizer variant of a run: its ``config.yaml``, else its run id."""
+    config_path = run_dir / "config.yaml"
+    if config_path.is_file():
+        try:
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            data = {}
+        tokenizer = data.get("tokenizer") if isinstance(data, dict) else None
+        quantizer = tokenizer.get("quantizer") if isinstance(tokenizer, dict) else None
+        if quantizer in THRESHOLDS:
+            return str(quantizer)
+
+    lowered = run_id.lower()
+    if "noisy" in lowered:
+        return "noisy"
+    if "vq" in lowered:
+        return "vq"
+    raise ValueError(
+        f"cannot tell the quantizer variant of run {run_id!r}: "
+        f"no tokenizer.quantizer in {config_path} and no 'vq'/'noisy' in the id"
+    )
 
 
 def fmt_list(values: list[float], digits: int) -> str:
@@ -66,12 +99,18 @@ def format_record(record: dict[str, Any]) -> str:
 
 def report_run(run_id: str, results: Path, last_only: bool) -> bool:
     """Print one run and return whether it passes its G0a threshold."""
-    threshold = THRESHOLDS[run_id]
+    run_dir = results / run_id
     try:
-        records = load_records(results / run_id)
+        records = load_records(run_dir)
     except (FileNotFoundError, ValueError) as exc:
         print(f"{run_id}: MISSING ({exc})")
         return False
+    try:
+        variant = run_variant(run_id, run_dir)
+    except ValueError as exc:
+        print(f"{run_id}: FAIL ({exc})")
+        return False
+    threshold = THRESHOLDS[variant]
 
     selected = records[-1:] if last_only else records
     for record in selected:
@@ -83,24 +122,30 @@ def report_run(run_id: str, results: Path, last_only: bool) -> bool:
     passed = accuracy >= threshold and source == "real"
     verdict = "PASS" if passed else "FAIL"
     print(
-        f"{verdict} {run_id}: final acc_full {accuracy:.4f} "
+        f"{verdict} {run_id} ({variant}): final acc_full {accuracy:.4f} "
         f"vs {threshold:.3f}, data_source {source}"
     )
     return passed
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, default=Path("results"))
+    parser.add_argument(
+        "--runs",
+        nargs="+",
+        default=list(DEFAULT_RUNS),
+        help="run ids under results/ to report (default: the 10k gate pair)",
+    )
     parser.add_argument(
         "--last",
         action="store_true",
         help="print only the final evaluation record of each run",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     outcomes = [
-        report_run(run_id, args.results, args.last) for run_id in THRESHOLDS
+        report_run(run_id, args.results, args.last) for run_id in args.runs
     ]
     return 0 if all(outcomes) else 1
 
