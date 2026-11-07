@@ -1,12 +1,12 @@
 # STATE — jncm
 
-Last updated: 2026-11-07 (T5.1 EMA and T5.2 VICReg done; `g0a_report.py --runs`; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
+Last updated: 2026-11-07 (T5.3 JEPA joint trainer done; `g0a_report.py --runs`; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M4 tasks complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, T4.3); **T5.1 (EMA)** and **T5.2 (VICReg)** complete and ticked; next agent task **T5.3** (joint trainer). Gates G0a/G0/G1 are still human-run on FIR.
-- Last completed tasks: T5.2 (VICReg terms), T5.1 (EMA target encoder) and `scripts/g0a_report.py --runs`; before that, T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`. Before that, T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
+- Milestone / task in progress: M0–M4 tasks complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, T4.3); **T5.1 (EMA)**, **T5.2 (VICReg)** and **T5.3 (JEPA joint trainer)** complete and ticked; next agent task **T5.4** (ablation configs and runbook section). Gates G0a/G0/G1/G2 are still human-run on FIR.
+- Last completed tasks: T5.3 (JEPA joint trainer: `jncm/jepa/joint.py`, `jncm/jepa/diagnostics.py`, `jncm/train_jepa.py`, 23 new tests), T5.2 (VICReg terms), T5.1 (EMA target encoder) and `scripts/g0a_report.py --runs`; before that, T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`. Before that, T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
 - T3.5 acceptance passes as written in TASKS.md: `ce` and `flow` memorise 8 sequences; `regress` memorises one unconditional sequence and, with the true level-1 code supplied, reproduces all 8 sequences when sampling levels 2..K.
 - All four Slurm templates now exist (`prep`, `tok`, `gen`, `eval`); `eval.sbatch` evaluates the milestone checkpoints with one array task per seed.
 - T4.2 milestone checkpoints: the generator trainer writes `ckpt/milestone_<pct>.pt` at 10/25/50/100% of the budget when `generator.train.save_milestones` is on (default), and `run_eval.py` evaluates exactly those by default.
@@ -24,6 +24,22 @@ Rule: newest information wins. Rewrite sections; do not append history.
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither 10k job had been polled when this table was written, so their state is UNVERIFIED beyond the submit record.
 
 ## VERIFIED (command + last lines of output)
+
+### T5.3 JEPA joint trainer — VERIFIED 2026-11-07
+- Focused: `.venv/Scripts/python.exe -m pytest -x -q tests/test_jepa_joint.py tests/test_jepa_diagnostics.py tests/test_train_jepa.py`
+  `23 passed in 16.71s`  (EXIT=0)
+- Full suite: `.venv/Scripts/python.exe -m pytest -x -q`
+  `186 passed in 198.71s (0:03:18)`  (EXIT=0)
+- `jncm/jepa/joint.py` + `jncm/jepa/diagnostics.py`: `encode_clean` equals the noisy chain at sigma = 0 (`torch.equal` for both `targets` and `zhat` at all K levels), and with sigma 0.4 every chain code differs; raising the online sigma from 0.4 to 2.0 leaves the EMA targets bit-identical (they come from E-bar's own noise-free chain) while the online chain codes change. `L = L_dec + lambda_pred * L_pred + L_vic` holds exactly; VICReg off gives `loss_vic = 0`; zeroed regress heads (collapsed c-hat) give `loss_vic >= K * 0.95`; `decoder_through_E=False` leaves the tokenizer trunk gradient zero/None while the decoder still trains; `predicted_codes` equals the raw regress output and is seed-reproducible for `flow`.
+- Diagnostics: iid N(0,I) `[4096, 8]` effective rank > 7, a constant gives 1.0, rank-one data < 1.2; R2(pred=target) = 1, R2(zeros, zero-mean unit-var target) ~ 0, constant target -> 0.0; `code_diagnostics` returns K-length finite lists with `eff_rank` in [1, d_k]; the alarm fires on the 3rd consecutive sub-0.1 step with patience 3, one healthy step resets it, default patience 200.
+- `jncm/train_jepa.py`: all four (`decoder_through_E`, `vicreg`) combinations run 50 CPU steps at smoke overrides (L=16, V=16, K=4, d=16, H=16), writing `config.yaml`, `git_sha.txt`, `metrics.jsonl`, `ckpt/latest.pt`; every record carries `loss_dec`/`loss_pred`/`loss_vic`, `std_min`/`std_mean` of c_k and t_k, both effective ranks, `r2`, `collapse_steps`, `collapse_alarm` and the four flags; `gen_positions = steps*B*L`, `tok_positions = offset + steps*B*L`, `total_positions = sum`; the checkpoint has `tokenizer`, `backbone`, `head`, `optimizer_state_dict`, `ema`, `collapse_alarm`, `tok_offset`.
+- EMA wiring: after one joint step the saved target `tok_emb.weight` equals `0.996 * initial + 0.004 * online` exactly; with `jepa.ema=false` the checkpoint saves `ema=None` and no `ema_momentum` field.
+- Smoke overfit (the TASKS acceptance): 300 CPU steps on one fixed batch of 4 sequences recorded CE 3.02 -> 0.73 and mean R2 -0.384 -> +0.338 (300-400 step probes spanned CE 0.26-0.98 and mean R2 +0.19..+0.39); the test asserts CE < 40% of the first record, mean R2 gain > 0.4 and mean R2 > 0.15.
+- Flow head runs 10 CPU steps with finite loss/R2 and a `nets.*` checkpoint; resume from step 2 to 4 continues at step 4 with `tok_positions = 99 + 4*B*L`; `validate_jepa_config` rejects `vq` + `ce` and negative weights, and `train` rejects before touching the checkpoint path.
+- CLI smoke (throwaway `.tmp_t53`, deleted afterwards; nothing written to `results/`): 3-step synthetic run printed
+  `Step     1 | Loss: 10.7432 | dec 4.2952 | pred 1.6979 | vic 4.7500 | R2 -0.658 | tok_pos: 228 | gen_pos: 128`
+  `Step     3 | Loss: 10.5794 | dec 4.4024 | pred 1.5154 | vic 4.6617 | R2 -0.620 | tok_pos: 484 | gen_pos: 384`
+  `2` metrics records, `latest.pt` and `step_000003.pt`, exit 0.
 
 ### T5.1 / T5.2 / g0a_report --runs — VERIFIED 2026-11-07
 - `.venv/Scripts/python.exe -m pytest -q tests/test_g0a_report.py tests/test_jepa_ema.py tests/test_jepa_vicreg.py`
@@ -236,6 +252,11 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 4. **Q8 resolved: keep SPEC 5.1 and the deterministic `regress` head.** Level 1 has one position and zero conditioning, so a deterministic head can only emit one code. The old 8-sequence unconditional acceptance was an invalid test, not a model bug. T3.5 now accepts (a) one unconditional fixed sequence at >= 0.90 and (b) the true level-1 code supplied, sampling levels 2..K, all 8 sequences at >= 0.90. SPEC 5.1 and the regress head are unchanged.
 5. **G0a tokenizer budget cut to 10,000 steps (allocation saving, 2026-11-07).** The dev tokenizers run as `tok_vq_10k` (job 2880034) and `tok_noisy_10k` (job 2880035) with `STEPS=10000` and `--time=04:00:00` instead of the 40,000-step SPEC 4.4 dev budget; the 24 h `jncm_tok` job 2800220 was cancelled. SPEC 4.4 and the G0a thresholds are unchanged (`acc_full` >= 0.999 vq / 0.995 noisy on `data_source=real`, checked by `scripts/g0a_report.py` on the final record); these two runs are the budget-limited pair the gate is judged on.
 
+## Files touched in T5.3
+- Code: `jncm/jepa/joint.py` (new: `encode_clean`, `integrate_flow`, `predicted_codes`, `JointStep`, `joint_loss`, `JEPA_HEADS`), `jncm/jepa/diagnostics.py` (new: `std_summary`, `effective_rank`, `explained_variance`, `code_diagnostics`, `CollapseAlarm`, `COLLAPSE_STD`, `COLLAPSE_PATIENCE`), `jncm/train_jepa.py` (new: `validate_jepa_config`, `joint_named_parameters`, `load_online_tokenizer`, `run_diagnostics`, `train`, CLI), `jncm/jepa/__init__.py` (exports).
+- Tests: `tests/test_jepa_joint.py`, `tests/test_jepa_diagnostics.py`, `tests/test_train_jepa.py` (new, 23 tests).
+- Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
+
 ## Files touched in T5.1 / T5.2 / g0a_report
 - Code: `jncm/jepa/__init__.py`, `jncm/jepa/ema.py` (new: `cosine_momentum`, `EMAModule`), `jncm/jepa/vicreg.py` (new: `variance_term`, `covariance_term`, `vicreg_loss`), `scripts/g0a_report.py` (`--runs`, variant-keyed thresholds).
 - Tests: `tests/test_g0a_report.py`, `tests/test_jepa_ema.py`, `tests/test_jepa_vicreg.py` (new, 16 tests).
@@ -294,7 +315,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - T3.5: verified only at CPU smoke scale and on the 600–1200 step memorization runs above. Real generator runs (H=768, 12 layers, batch 1024, 10k steps, about 1.3B positions, SPEC 5.7) are untested; Gen PPL in T3.5 used a fake scorer (the real GPT-2 path is verified separately by T1.2). The `regress` memorization arm is structurally blocked (Q8).
 - T3.1–T3.4 were verified on eval-mode modules; T3.5 is the first end-to-end (tokenizer -> generator -> decode) check, but only on 8 fixed sequences.
 - G0a/G0/G1/G2: human cluster gates, not run.
-- T5.1/T5.2 are module-level and CPU-verified only; the joint training loop (T5.3) does not exist yet, so no JEPA run has been made.
+- T5.3 is CPU-verified at smoke scale only (23 tests plus a 3-step CLI run); no real JEPA joint run (dev-scale noisy tokenizer, H=768, batch 1024) has been made and no G2 comparison exists.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 - T4.2 is verified on smoke-scale checkpoints and the throwaway CLI run above; a real 256-sample x 5-seed eval on a trained generator has not run yet (the real GPT-2 scoring path itself is covered by the T1.2 gate and the batched probe).
 
@@ -309,6 +330,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 8. The slow acceptance takes about 2 minutes on CPU (mostly the flow arm), so `pytest -x -q` now takes about 2.5 minutes. `pytest -m "not slow"` is the fast loop.
 9. FIR `~/jncm` is not a git repository (`git log` -> `fatal: not a git repository`); the tree was extracted from the tar, so cluster runs cannot write a real `git_sha.txt`. `RUNBOOK.md` §1.1 replaces it with a clone of the private remote; until then, compare cluster results against the local commit recorded here. The current remote `scripts/slurm/tok.sbatch` is also the pre-h100 copy (`--gres=gpu:1`), so pass `--gres=gpu:h100:1` on the command line.
 10. RESOLVED 2026-11-07: `scripts/g0a_report.py` takes `--runs` (default `tok_vq_10k tok_noisy_10k`) and keys the thresholds on each run's quantizer variant (0.999 vq / 0.995 noisy), read from `results/<run_id>/config.yaml` (`tokenizer.quantizer`) with a run-id fallback; an unknown variant fails loudly. The 10k gate pair can now be judged directly.
+11. With `jepa.vicreg` on and `head=flow`, the VICReg c-hat term integrates the flow (`flow_steps` network calls per level) inside the loss, so a JEPA flow step costs more than a Phase-1 flow step; `regress` has no such overhead. The EMA copy also holds the tokenizer decoder, which the target chain never uses.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
@@ -336,6 +358,11 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - T4.2 eval rebuilds the generator from the checkpoint's saved `config`; `--config` must still agree on L, V, head, quantizer and K. This is what lets a smoke run trained with overridden H/n_layers be evaluated from `configs/smoke.yaml`.
 - T4.2 plot input: TASKS says `results/**/metrics.jsonl`, the task deliverable says `results/**/eval/*.json`; the script reads aggregate eval JSON and skips per-seed shards. The entropy panel plots dataset-token H solid and GPT-2-token H dashed; the diversity panel plots `pairwise_agree` solid and `unique_frac` dashed; x is `total_positions`, falling back to `gen_positions + tok_positions` (SPEC 6.2 offset).
 - T4.2 `eval.sbatch`: one array task per seed (`--seeds $SLURM_ARRAY_TASK_ID`) writing shards; the header documents the `--merge` step. `#SBATCH --array=0-4` is a placeholder kept in sync with `N_SEEDS=5`.
+- JEPA's E-bar is a full deep copy of the tokenizer (the decode path is unused); `encode_clean` repeats the SPEC 4.1 chain with `c_k = LayerNorm(Linear_k(u))`, so the EMA targets never see the channel noise (SPEC 8 step 2).
+- SPEC 8's VICReg "on c-hat_k" uses the deterministic prediction: the raw `regress` output (no renorm, no channel noise) or `flow`'s Euler integration without channel noise. Sampling-time renorm/noise would make the variance term trivially satisfied.
+- The SPEC 8 collapse alarm watches the online `c_k` mean std per level (below 0.1 for 200 consecutive steps). Target and prediction stds are logged too, but the alarm counts c_k only.
+- JEPA has no separate train block: it reuses `generator.train` (lr, warmup, steps, batch, clip) and `cfg.tokenizer.p_drop` for nested dropout. A joint step is both a tokenizer and a generator step, so `tok_positions` and `gen_positions` each grow by B*L per step, and `total_positions` = tokenizer checkpoint offset + 2*B*L*steps.
+- `jepa.enabled` is not consulted by `jncm.train_jepa`; the entry point itself selects joint mode. The four SPEC 8 ablation flags (`jepa.ema`, `jepa.vicreg`, `jepa.decoder_through_E`, `generator.head`) are all consumed and tested.
 
 ## Human must fill / do
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
@@ -375,7 +402,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 ## Next 3 steps
 1. Human: sync FIR (`RUNBOOK.md` §1), then wait for or resubmit jobs 2880034 (`tok_vq_10k`) and 2880035 (`tok_noisy_10k`) and judge G0a with `RUNBOOK.md` §4.2.
 2. Human: G0 with `HEAD=ce`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `RUN_ID=gen_vq_ce_dev`, then `eval.sbatch`/`--merge`/`plot_curves.py` (`RUNBOOK.md` §2.2).
-3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4. T5.1/T5.2 are done; the next agent task is T5.3 (joint trainer).
+3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4. T5.3 is done; the next agent task is T5.4 (ablation configs and runbook section).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
