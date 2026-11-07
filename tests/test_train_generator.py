@@ -7,13 +7,16 @@ validation.
 
 Acceptance (``pytest -m slow``, CPU): overfit the tokenizer on 8 fixed
 sequences, then the generator; sampled outputs match the training sequences at
->= 90% token accuracy for ``ce`` and ``regress``, >= 80% for ``flow``.
+>= 90% token accuracy for ``ce`` and >= 80% for ``flow``. ``regress`` is a
+deterministic head: it memorises ONE fixed sequence at >= 90%, and with the
+true level-1 code supplied it reproduces all 8 sequences when sampling levels
+2..K (SPEC 5.3, Q8).
 
 Level 1 is fed ``zhat_0 = 0`` for every sequence (SPEC 5.1), so the only
 sequence-identifying information is the level-1 code the head samples. Each
-sample is therefore compared against its best-matching training sequence, and
-the test also requires that several distinct sequences are matched (a collapse
-onto one sequence would otherwise pass).
+``ce``/``flow`` sample is therefore compared against its best-matching training
+sequence, and the test also requires that several distinct sequences are
+matched (a collapse onto one sequence would otherwise pass).
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from jncm.tokenizer import MultiscaleTokenizer
 from jncm.train_generator import (
     build_generator,
     compute_generator_loss,
+    diversity_metrics,
     load_tokenizer,
     sample_and_score,
     train,
@@ -290,12 +294,41 @@ def test_train_eval_hook_writes_samples_and_gen_ppl(tmp_path: Path) -> None:
     # One NLL per token over equal-length texts -> exp(1).
     assert abs(last["gen_ppl"] - math.e) < 1e-3
     assert len(decoded) == 3 * len(records)
+    expected_diversity = diversity_metrics(decoded[-3:])
+    assert last["unique_frac"] == pytest.approx(expected_diversity["unique_frac"])
+    assert last["pairwise_agree"] == pytest.approx(
+        expected_diversity["pairwise_agree"]
+    )
 
     sample_files = sorted((run_dir / "samples").glob("step_*.txt"))
     assert len(sample_files) == len(records)
     lines = sample_files[-1].read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 3
     assert lines == [" ".join(str(i) for i in ids) for ids in decoded[-3:]]
+
+
+def test_diversity_metrics_endpoints() -> None:
+    # SPEC 6.1: identical samples are one distinct sample and agree everywhere.
+    identical = [[1, 2, 3, 4]] * 4
+    metrics = diversity_metrics(identical)
+    assert metrics["unique_frac"] == pytest.approx(1 / 4)
+    assert metrics["pairwise_agree"] == pytest.approx(1.0)
+
+    # Fully different samples with disjoint tokens: all distinct, agree nowhere.
+    different = [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [8, 9, 10, 11],
+        [12, 13, 14, 15],
+    ]
+    metrics = diversity_metrics(different)
+    assert metrics["unique_frac"] == pytest.approx(1.0)
+    assert metrics["pairwise_agree"] == pytest.approx(0.0)
+
+    # No pairs exist with a single sample.
+    metrics = diversity_metrics([[1, 2, 3]])
+    assert metrics["unique_frac"] == pytest.approx(1.0)
+    assert metrics["pairwise_agree"] == pytest.approx(0.0)
 
 
 def test_resume_continues_step_and_positions(tmp_path: Path) -> None:
@@ -415,22 +448,6 @@ def memorisation_ckpts(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Pa
     "quantizer,head_name,steps,lr,threshold",
     [
         pytest.param("vq", "ce", 600, 1e-3, 0.90, id="ce"),
-        pytest.param(
-            "noisy",
-            "regress",
-            1000,
-            1e-3,
-            0.90,
-            id="regress",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "Q8 / docs/QUESTIONS.md: level 1 is conditioned on zhat_0 = 0 only "
-                    "(SPEC 5.1), so a deterministic regression head predicts the batch "
-                    "mean code and cannot emit 8 distinct sequences (measured 0.36)."
-                ),
-            ),
-        ),
         pytest.param("noisy", "flow", 1200, 2e-3, 0.80, id="flow"),
     ],
 )
@@ -507,4 +524,98 @@ def test_generator_memorises_eight_sequences(
     assert distinct >= 3, (
         f"{head_name}: samples match only {distinct} distinct training "
         f"sequences; the generator collapsed"
+    )
+
+
+def _train_regress_memoriser(
+    tmp_path: Path,
+    ckpt_path: Path,
+    sequences: torch.Tensor,
+    steps: int,
+) -> tuple[MultiscaleTokenizer, GeneratorBackbone, LevelHead]:
+    """Train the deterministic ``regress`` head on fixed sequences."""
+    cfg = _smoke_cfg("regress", "noisy", H=64, n_layers=2)
+    cfg.generator.train.batch_size = sequences.shape[0]
+    cfg.generator.train.lr = 1e-3
+    cfg.generator.train.min_lr = 1e-4
+    cfg.generator.train.warmup_steps = 10
+    cfg.generator.train.weight_decay = 0.0
+    cfg.generator.train.grad_clip = 1.0
+    cfg.generator.train.eval_every = 10**9
+    cfg.generator.train.save_every = 10**9
+    cfg.generator.corrupt.mode = "none"
+
+    data_dir = _write_data(tmp_path / "data", sequences)
+    run_dir = train(
+        cfg,
+        ckpt_path,
+        max_steps=steps,
+        run_id="gen_regress_mem",
+        results_dir=tmp_path / "results",
+        data_dir=data_dir,
+        allow_synthetic=False,
+    )
+
+    tokenizer, backbone, head = _load_generator(ckpt_path, cfg)
+    state = torch.load(run_dir / "ckpt" / "latest.pt", map_location="cpu")
+    backbone.load_state_dict(state["backbone"])
+    head.load_state_dict(state["head"])
+    tokenizer.eval()
+    backbone.eval()
+    head.eval()
+    return tokenizer, backbone, head
+
+
+@pytest.mark.slow
+def test_regress_memorises_one_sequence(
+    tmp_path: Path, memorisation_ckpts: dict[str, Path]
+) -> None:
+    # A deterministic head at level 1 can only emit one code (SPEC 5.3, Q8),
+    # so the unconditional acceptance is one fixed sequence.
+    sequences = _fixed_sequences()[:1]
+    tokenizer, backbone, head = _train_regress_memoriser(
+        tmp_path, memorisation_ckpts["noisy"], sequences, steps=1000
+    )
+
+    tokens, _, _ = sample_and_score(
+        tokenizer,
+        backbone,
+        head,
+        1,
+        generator=torch.Generator().manual_seed(0),
+    )
+    accuracy = float((tokens[0] == sequences[0]).float().mean())
+    assert accuracy >= 0.90, (
+        f"regress one-sequence token accuracy {accuracy:.3f} < 0.90"
+    )
+
+
+@pytest.mark.slow
+def test_regress_teacher_forced_level_one_reproduces_eight(
+    tmp_path: Path, memorisation_ckpts: dict[str, Path]
+) -> None:
+    # Supply the true level-1 code, then sample levels 2..K from the regress
+    # head; all 8 sequences must be reproduced (SPEC 5.3, Q8).
+    sequences = _fixed_sequences()
+    tokenizer, backbone, head = _train_regress_memoriser(
+        tmp_path, memorisation_ckpts["noisy"], sequences, steps=2500
+    )
+
+    with torch.no_grad():
+        enc = tokenizer.encode(
+            sequences, generator=torch.Generator().manual_seed(0)
+        )
+        zhat = tokenizer.contrib(1, enc.codes[0])  # true level-1 code
+        generator = torch.Generator().manual_seed(0)
+        for k in range(2, tokenizer.K + 1):
+            level_input = backbone.embed_level(tokenizer, zhat, k)
+            hidden = backbone(level_input)
+            code = head.sample_level(hidden, k, generator=generator)
+            zhat = zhat + tokenizer.contrib(k, code)
+        tokens = tokenizer.decode(zhat).argmax(dim=-1)
+
+    accuracy = (tokens == sequences).float().mean(dim=1)
+    assert float(accuracy.min()) >= 0.90, (
+        f"teacher-forced regress accuracy per sequence {accuracy.tolist()} "
+        "has a sequence below 0.90"
     )

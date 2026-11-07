@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from pathlib import Path
+import random
 import time
 from typing import Any, Callable, Iterable
 
@@ -187,6 +188,49 @@ def compute_generator_loss(
     return total, per_level
 
 
+def diversity_metrics(
+    id_lists: list[list[int]],
+    max_pairs: int = 1000,
+) -> dict[str, float]:
+    """Sample diversity metrics (SPEC 6.1) on dataset tokens.
+
+    ``unique_frac`` is the number of distinct token sequences divided by the
+    number of samples. ``pairwise_agree`` is the mean fraction of identical
+    token positions over up to ``max_pairs`` distinct sample pairs; with fewer
+    than two samples there are no pairs and it is 0.
+
+    Args:
+        id_lists: ``n_samples`` token-id sequences, each of length L.
+        max_pairs: Pair budget; all pairs are used when there are fewer.
+
+    Returns:
+        ``{"unique_frac": float, "pairwise_agree": float}``.
+    """
+    n_samples = len(id_lists)
+    if n_samples < 1:
+        raise ValueError("id_lists must contain at least one sample")
+    unique_frac = len({tuple(ids) for ids in id_lists}) / n_samples
+    pairs = [
+        (i, j) for i in range(n_samples) for j in range(i + 1, n_samples)
+    ]
+    if len(pairs) > max_pairs:
+        pairs = random.Random(0).sample(pairs, max_pairs)
+    agreements: list[float] = []
+    for i, j in pairs:
+        left, right = id_lists[i], id_lists[j]
+        length = min(len(left), len(right))
+        if length == 0:
+            agreements.append(0.0)
+        else:
+            same = sum(x == y for x, y in zip(left, right))
+            agreements.append(same / length)
+    pairwise_agree = sum(agreements) / len(agreements) if agreements else 0.0
+    return {
+        "unique_frac": float(unique_frac),
+        "pairwise_agree": float(pairwise_agree),
+    }
+
+
 def sample_and_score(
     tokenizer: MultiscaleTokenizer,
     backbone: GeneratorBackbone,
@@ -203,8 +247,9 @@ def sample_and_score(
 
     Returns:
         ``(tokens [n_samples, L], texts or None, metrics)`` where metrics has
-        ``sample_entropy`` (nats, dataset tokens) and, when both a decoder and
-        a scorer are given, ``gen_ppl``.
+        ``sample_entropy`` (nats, dataset tokens), ``unique_frac`` and
+        ``pairwise_agree`` (SPEC 6.1), and, when both a decoder and a scorer
+        are given, ``gen_ppl``.
     """
     if n_samples < 1:
         raise ValueError(f"n_samples must be >= 1, got {n_samples}")
@@ -223,6 +268,7 @@ def sample_and_score(
 
     id_lists = tokens.tolist()
     metrics: dict[str, float] = {"sample_entropy": unigram_entropy(id_lists)}
+    metrics.update(diversity_metrics(id_lists))
     texts = None
     if decode_fn is not None:
         texts = [decode_fn(ids) for ids in id_lists]

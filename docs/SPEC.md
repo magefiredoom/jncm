@@ -1,10 +1,12 @@
-# SPEC — jncm (v1.2, 2026-11-05)
+# SPEC — jncm (v1.3, 2026-11-06)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
 
 **v1.1 changes** (from docs/REVIEW_M0-M2.md): learned attention projections made explicit (4.1); vq `codes` are straight-through vectors and the generator conditions from `targets` (4.1); vq arithmetic in fp32 (4.2); bounded-memory data prep and no silent synthetic fallback (3); unknown config keys raise (7).
 
 **v1.2 change:** level-schedule ties round half up, defined with exact integer arithmetic (2).
+
+**v1.3 changes:** diversity metrics `unique_frac` and `pairwise_agree` added to evaluation (6.1); the `regress` head's collapse at level 1 is documented as expected behavior of the ablation (5.3).
 
 ## 1. Purpose and scope
 
@@ -148,7 +150,7 @@ Pre-LN transformer: 12 layers, H = 768, 12 heads, MLP 4H with GELU, dropout 0.1,
 ### 5.3 Heads (config `head`)
 
 - `ce` (for `vq`): per-level Linear(H -> V_k); cross-entropy on code indices.
-- `regress` (for `noisy`): per-level Linear(H -> d_k) giving c-hat_k; loss MSE against clean c_k (option `cosine`). At sampling apply LayerNorm(no affine) to c-hat_k (`renorm_pred`, default true) because the regression mean has shrunken norm.
+- `regress` (for `noisy`): per-level Linear(H -> d_k) giving c-hat_k; loss MSE against clean c_k (option `cosine`). At sampling apply LayerNorm(no affine) to c-hat_k (`renorm_pred`, default true) because the regression mean has shrunken norm. A deterministic head at level 1 (one position, no conditioning) can only emit one code, so unconditional samples collapse toward one sequence. This is the expected behavior of this ablation arm, not a bug; it is made visible by the diversity metrics in 6.1. Tests must not require a deterministic head to reproduce several different sequences from an unconditional level 1.
 - `flow` (for `noisy`): per-level conditional flow-matching MLP on the clean code. **[DECISION]**
   - Input: x_t [N,d_k], time embedding (sinusoidal, 128 dims), hidden state h [N,H]. Network: Linear(d_k + 128 + H -> 512), SiLU, 3 residual blocks (Linear 512 -> 512, SiLU), Linear(512 -> d_k).
   - Train: for each valid position draw `n_rep` = 4 pairs (t ~ U(0,1), eps ~ N(0,I)); x_t = (1-t)*eps + t*c_k; target velocity v = c_k - eps; loss MSE(net(x_t, t, h), v).
@@ -189,6 +191,7 @@ AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, 
 - Draw `n_samples` = 256 sequences, `n_seeds` = 5 (final results: 1024 samples).
 - Decode ids to text with the dataset tokenizer, re-tokenize with the GPT-2 tokenizer, score with GPT-2-large loaded from a local path (`$GPT2_LARGE_PATH`, offline). Gen PPL = exp(mean token NLL over all scored tokens). Score the full re-tokenized sample (no truncation). Report mean and std over seeds.
 - H = mean over samples of the entropy (nats) of the empirical unigram distribution of that sample's tokens. Compute it on GPT-2 tokens; also compute it on the dataset's own tokens and record which one matches the real-data reference.
+- Diversity, reported with every Gen PPL (perplexity and per-sample entropy cannot reveal that all samples are alike): `unique_frac` = distinct decoded samples / n_samples (catches exact duplicates only; channel noise can keep it near 1 for a collapsed model); `pairwise_agree` = mean fraction of identical token positions over 1,000 random pairs of distinct samples, on dataset tokens (catches near-duplicates; about 1 means collapsed).
 - **Protocol gate (T1.2):** the same pipeline applied to real validation sequences must give about 9.67 PPL and about 3.96 H (tolerance 15% and 0.15). If not, debug the protocol before any model comparison. Do not adjust the metric to hit the numbers; write the diagnosis in docs/QUESTIONS.md.
 
 ### 6.2 Token accounting (for the sample-efficiency claim)
@@ -205,7 +208,7 @@ Each evaluation writes 32 decoded samples to `results/<run_id>/samples/step_<n>.
 - `results/<run_id>/` contains `config.yaml`, `git_sha.txt`, `metrics.jsonl` (one JSON object per eval or log step), `ckpt/`, `samples/`.
 - Seed everything (python, numpy, torch, DataLoader generators). Checkpoints are resumable.
 - No wandb. Logging is JSONL plus `scripts/plot_curves.py`.
-- Slurm scripts read the account from `$SLURM_ACCOUNT`. Never hard-code or guess account, partition or GPU type.
+- Slurm scripts never contain an account, partition or GPU type that was guessed. `#SBATCH` lines cannot expand variables, so the account and partition come from the environment (`SBATCH_ACCOUNT`, `SBATCH_PARTITION`) or the `sbatch` command line.
 
 ## 8. JEPA joint mode (Phase 2) **[DECISION]**: the researcher will revise this after Phase-1 results
 
