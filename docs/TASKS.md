@@ -63,8 +63,8 @@ Work on the first unchecked task. One task per session unless told otherwise.
 
 ## M5 — JEPA joint mode (SPEC section 8)
 
-- [ ] **T5.1 EMA.** `jncm/jepa/ema.py`. Tests: update numerics against a hand-computed value; target has no grad; target is in eval mode; momentum schedule endpoints.
-- [ ] **T5.2 VICReg.** `jncm/jepa/vicreg.py`. Tests: iid N(0,I) gives var term about 0 and small cov; a constant gives var = gamma; correlated dimensions give cov > 0.
+- [x] **T5.1 EMA.** `jncm/jepa/ema.py`. Tests: update numerics against a hand-computed value; target has no grad; target is in eval mode; momentum schedule endpoints. — PASSED 2026-11-07 (`tests/test_jepa_ema.py`: 5 tests; hand-computed `0.996*[1,-2] + 0.004*[2,3]`, target `requires_grad=False` and independent, eval mode held after parent `.train()`, schedule 0.996 -> 1.0 endpoints and monotonicity, `update` uses the scheduled momentum; new-test run `16 passed`, full non-slow suite `159 passed, 4 deselected`).
+- [x] **T5.2 VICReg.** `jncm/jepa/vicreg.py`. Tests: iid N(0,I) gives var term about 0 and small cov; a constant gives var = gamma; correlated dimensions give cov > 0. — PASSED 2026-11-07 (`tests/test_jepa_vicreg.py`: 6 tests; iid `[4096, 8]` var < 0.02 / cov < 0.01, constant var = gamma (0.9999) and cov = 0, correlated dims cov > 0.1, gradients finite through both terms; new-test run `16 passed`, full non-slow suite `159 passed, 4 deselected`).
 - [ ] **T5.3 Joint trainer.** `jncm/jepa/joint.py`, `jncm/train_jepa.py`, all flags, diagnostics (std, effective rank, R2 per level, collapse alarm).
   Accept: smoke overfit test; each flag combination of the 2x2 runs 50 CPU steps without error.
 - [ ] **T5.4 Ablation configs and runbook section.**

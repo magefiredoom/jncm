@@ -1,12 +1,12 @@
 # STATE — jncm
 
-Last updated: 2026-11-07 (T4.3 `RUNBOOK.md` added; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
+Last updated: 2026-11-07 (T5.1 EMA and T5.2 VICReg done; `g0a_report.py --runs`; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M4 tasks complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, **T4.3**); next agent task **T5.1** (EMA). Gates G0a/G0/G1 are still human-run on FIR.
-- Last completed task: T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`. Before that, T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
+- Milestone / task in progress: M0–M4 tasks complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, T4.3); **T5.1 (EMA)** and **T5.2 (VICReg)** complete and ticked; next agent task **T5.3** (joint trainer). Gates G0a/G0/G1 are still human-run on FIR.
+- Last completed tasks: T5.2 (VICReg terms), T5.1 (EMA target encoder) and `scripts/g0a_report.py --runs`; before that, T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`. Before that, T4.2 (eval and plots): padding-safe batched GPT-2 scoring in `GPT2Scorer`, `scripts/run_eval.py` over milestone checkpoints, `scripts/plot_curves.py`, `scripts/slurm/eval.sbatch`. Before that, T1.2 protocol gate on real TinyStories validation data (`scripts/eval_data_row.py`, 256 samples): Gen PPL 10.80 +/- 0.26 and H 4.03 +/- 0.01, both inside tolerance.
 - T3.5 acceptance passes as written in TASKS.md: `ce` and `flow` memorise 8 sequences; `regress` memorises one unconditional sequence and, with the true level-1 code supplied, reproduces all 8 sequences when sampling levels 2..K.
 - All four Slurm templates now exist (`prep`, `tok`, `gen`, `eval`); `eval.sbatch` evaluates the milestone checkpoints with one array task per seed.
 - T4.2 milestone checkpoints: the generator trainer writes `ckpt/milestone_<pct>.pt` at 10/25/50/100% of the budget when `generator.train.save_milestones` is on (default), and `run_eval.py` evaluates exactly those by default.
@@ -24,6 +24,15 @@ Rule: newest information wins. Rewrite sections; do not append history.
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither 10k job had been polled when this table was written, so their state is UNVERIFIED beyond the submit record.
 
 ## VERIFIED (command + last lines of output)
+
+### T5.1 / T5.2 / g0a_report --runs — VERIFIED 2026-11-07
+- `.venv/Scripts/python.exe -m pytest -q tests/test_g0a_report.py tests/test_jepa_ema.py tests/test_jepa_vicreg.py`
+  `16 passed in 2.21s`  (EXIT=0)
+- Full non-slow suite: `.venv/Scripts/python.exe -m pytest -x -q -m "not slow"`
+  `159 passed, 4 deselected in 25.91s`  (EXIT=0)
+- `scripts/g0a_report.py` fixtures: the default runs are `tok_vq_10k`/`tok_noisy_10k`; an explicit `--runs` pair is judged with 0.999 (vq) / 0.995 (noisy) and prints `PASS|FAIL <run_id> (<variant>) ... vs <threshold>`; a run without `config.yaml` falls back to its id; an unknown variant exits 1.
+- `jncm/jepa/ema.py`: hand arithmetic `0.996*[1,-2] + 0.004*[2,3]`; target parameters `requires_grad=False` and independent of the online module; eval mode survives `parent.train()` and `ema.train(True)`; `cosine_momentum` = 0.996 at step 0, 0.998 at T/2, 1.0 at T and beyond, non-decreasing; `update` uses the scheduled momentum.
+- `jncm/jepa/vicreg.py`: iid N(0,I) `[4096, 8]` gives var < 0.02 and cov < 0.01; a constant gives var = gamma (0.9999 with eps 1e-8, exactly 1 with eps 0) and cov = 0; two correlated dimensions give cov > 0.1; gradients through both terms are finite, including a fully collapsed input.
 
 ### T4.3 runbook — VERIFIED 2026-11-07
 - `.venv/Scripts/python.exe -m pytest -q -m "not slow"`
@@ -227,6 +236,11 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 4. **Q8 resolved: keep SPEC 5.1 and the deterministic `regress` head.** Level 1 has one position and zero conditioning, so a deterministic head can only emit one code. The old 8-sequence unconditional acceptance was an invalid test, not a model bug. T3.5 now accepts (a) one unconditional fixed sequence at >= 0.90 and (b) the true level-1 code supplied, sampling levels 2..K, all 8 sequences at >= 0.90. SPEC 5.1 and the regress head are unchanged.
 5. **G0a tokenizer budget cut to 10,000 steps (allocation saving, 2026-11-07).** The dev tokenizers run as `tok_vq_10k` (job 2880034) and `tok_noisy_10k` (job 2880035) with `STEPS=10000` and `--time=04:00:00` instead of the 40,000-step SPEC 4.4 dev budget; the 24 h `jncm_tok` job 2800220 was cancelled. SPEC 4.4 and the G0a thresholds are unchanged (`acc_full` >= 0.999 vq / 0.995 noisy on `data_source=real`, checked by `scripts/g0a_report.py` on the final record); these two runs are the budget-limited pair the gate is judged on.
 
+## Files touched in T5.1 / T5.2 / g0a_report
+- Code: `jncm/jepa/__init__.py`, `jncm/jepa/ema.py` (new: `cosine_momentum`, `EMAModule`), `jncm/jepa/vicreg.py` (new: `variance_term`, `covariance_term`, `vicreg_loss`), `scripts/g0a_report.py` (`--runs`, variant-keyed thresholds).
+- Tests: `tests/test_g0a_report.py`, `tests/test_jepa_ema.py`, `tests/test_jepa_vicreg.py` (new, 16 tests).
+- Docs: `docs/STATE.md`, `docs/TASKS.md` (SPEC.md not edited).
+
 ## Files touched in T0.2 / T1.2 (verification only)
 - Docs: `docs/STATE.md`, `docs/TASKS.md`. No code changes; `data/tiny_test` was generated by the existing prep script, and `results/t1_2_protocol_gate.json` is the gate record (both git-ignored).
 
@@ -280,6 +294,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - T3.5: verified only at CPU smoke scale and on the 600–1200 step memorization runs above. Real generator runs (H=768, 12 layers, batch 1024, 10k steps, about 1.3B positions, SPEC 5.7) are untested; Gen PPL in T3.5 used a fake scorer (the real GPT-2 path is verified separately by T1.2). The `regress` memorization arm is structurally blocked (Q8).
 - T3.1–T3.4 were verified on eval-mode modules; T3.5 is the first end-to-end (tokenizer -> generator -> decode) check, but only on 8 fixed sequences.
 - G0a/G0/G1/G2: human cluster gates, not run.
+- T5.1/T5.2 are module-level and CPU-verified only; the joint training loop (T5.3) does not exist yet, so no JEPA run has been made.
 - If any F2 test passed before its fix: `F2[noisy]` passed. The vq crash was real (`index_add_` dtype); the fp32 quantizer change was kept for both variants.
 - T4.2 is verified on smoke-scale checkpoints and the throwaway CLI run above; a real 256-sample x 5-seed eval on a trained generator has not run yet (the real GPT-2 scoring path itself is covered by the T1.2 gate and the batched probe).
 
@@ -293,7 +308,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 7. `tok.sbatch` resumes from `results/<run_id>/ckpt/latest.pt`, which the trainer rewrites every `train.save_every` steps (5000 in the dev config), so a preempted job loses at most that many steps. Resume already does not restore the data iterator or RNG (item 2).
 8. The slow acceptance takes about 2 minutes on CPU (mostly the flow arm), so `pytest -x -q` now takes about 2.5 minutes. `pytest -m "not slow"` is the fast loop.
 9. FIR `~/jncm` is not a git repository (`git log` -> `fatal: not a git repository`); the tree was extracted from the tar, so cluster runs cannot write a real `git_sha.txt`. `RUNBOOK.md` §1.1 replaces it with a clone of the private remote; until then, compare cluster results against the local commit recorded here. The current remote `scripts/slurm/tok.sbatch` is also the pre-h100 copy (`--gres=gpu:1`), so pass `--gres=gpu:h100:1` on the command line.
-10. `scripts/g0a_report.py` hard-codes its thresholds on the `tok_vq_dev` / `tok_noisy_dev` run ids (`THRESHOLDS`), so it cannot read the 10k gate pair. `RUNBOOK.md` §4.2 prints the same fields and the 0.999/0.995 verdict for `tok_vq_10k`/`tok_noisy_10k`; the script was left unchanged (T4.3 is docs-only).
+10. RESOLVED 2026-11-07: `scripts/g0a_report.py` takes `--runs` (default `tok_vq_10k tok_noisy_10k`) and keys the thresholds on each run's quantizer variant (0.999 vq / 0.995 noisy), read from `results/<run_id>/config.yaml` (`tokenizer.quantizer`) with a run-id fallback; an unknown variant fails loudly. The 10k gate pair can now be judged directly.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
@@ -360,7 +375,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 ## Next 3 steps
 1. Human: sync FIR (`RUNBOOK.md` §1), then wait for or resubmit jobs 2880034 (`tok_vq_10k`) and 2880035 (`tok_noisy_10k`) and judge G0a with `RUNBOOK.md` §4.2.
 2. Human: G0 with `HEAD=ce`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `RUN_ID=gen_vq_ce_dev`, then `eval.sbatch`/`--merge`/`plot_curves.py` (`RUNBOOK.md` §2.2).
-3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4; after G0 the agent can start T5.1 (EMA).
+3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4. T5.1/T5.2 are done; the next agent task is T5.3 (joint trainer).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
