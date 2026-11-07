@@ -20,6 +20,12 @@ Research codebase. Goal: compare discrete (VQ) and continuous multiscale hierarc
 10. **Commit after every task:** `git commit -m "T2.2: <summary>"`.
 11. **When unsure about a library API, test it in a tiny script before building on it.** Do not guess signatures.
 
+## FIR operator rules (only when I say you may use `ssh fir`)
+- Use only `ssh fir '<command>'` (shared connection). Never ask for or type passwords or MFA codes. If the connection is down, stop and tell me.
+- Allowed: `sbatch`, `squeue -u $USER`, `sacct`, `scancel <id>` for jobs you submitted, `ls`, `cat`, `head`, `tail -n 50`, rsync of this repo's data/ and results/ only. One-time setup: `module load`, `virtualenv`, `pip install --no-index`.
+- Never run python, pytest or training on the login node, except one 5-step smoke run as a sanity check. No `rm`. Stay inside <dir>/jncm.
+- Print at most 30 lines of any log. Report job ids and states, not full outputs.
+
 ## Commands
 - All tests: `pytest -x -q`
 - One file: `pytest -x -q tests/test_levels.py`
