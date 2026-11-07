@@ -4,12 +4,12 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32000M
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --time=12:00:00
 # Wall clock above is a template default; override it on the command line
 # (the 500-step pilot uses --time=00:20:00, the full runs use the measured
-# limit). GPU type: --gres=gpu:1 asks for one generic GPU on FIR's default
-# partition; no type is pinned, so an H100 is acceptable.
+# limit). GPU type: FIR rejects a generic --gres=gpu:1 and requires an
+# explicit model, so this asks for one H100.
 # Modules: FIR supplies python 3.12 through the module system.
 # Venv: .venv/bin/activate at the repo root (docs/STATE.md, Environment).
 #

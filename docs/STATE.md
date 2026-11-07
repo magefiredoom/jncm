@@ -37,7 +37,11 @@ Rule: newest information wins. Rewrite sections; do not append history.
   `122 passed, 4 deselected in 19.36s`  (EXIT=0)
 - Real data already present: `data/tinystories/{train,val}.bin` + `tokenizer.json` + `meta.json`; meta `train_windows 3647424`, `val_windows 36658`, `L 128`, `V 8192`. `scripts/prep_tinystories.py` was not re-run.
 - `scripts/slurm/tok.sbatch` placeholders filled: `--time=12:00:00` (template default, overridden per submit), `--cpus-per-task=6`, `--mem=32000M`, `module load python/3.12`, venv `.venv` unchanged; optional `STEPS` / `RUN_ID` overrides (`RUN_ID` defaults to `tok_<quant>_dev`, `STEPS` unset = config budget). `bash -n` (Git bash) exit 0.
-- FIR target (from user): host `login2.int.fir.alliancecan.ca`, user `aefad`, repo `~/jncm`, account `def-cheng23_`, python module `python/3.12`, no partition flag.
+- FIR target (from user): host `login2.int.fir.alliancecan.ca`, user `aefad`, repo `~/jncm`, python module `python/3.12`, no partition flag. FIR rejects the literal account `def-cheng23_`; the valid account is `def-cheng23` (Slurm error lists it).
+- FIR requires an explicit GPU model: `gpu:h100` exists (`sinfo -o "%G"` shows `gpu:h100:4(S:2-3)`), so `tok.sbatch` now requests `--gres=gpu:h100:1`; a generic `--gres=gpu:1` is rejected at submit time.
+- Venv on FIR: `module load python/3.12` (3.12.4), `virtualenv --no-download .venv`, `pip install --no-index torch numpy pyyaml` -> torch 2.14.1+computecanada, numpy 2.5.3, pyyaml 6.0.3.
+- Smoke: `python -m jncm.train_tokenizer --config configs/smoke.yaml --steps 5 --set L=128 --set V=8192 --run_id smoke_g0a` -> 5 steps, real data, exit 0. (The first attempt failed loudly as designed: real meta L=128 vs smoke config L=32.)
+- Pilot submission: `sbatch --account=def-cheng23 --gres=gpu:h100:1 --time=00:20:00 --export=ALL,QUANT=vq,STEPS=500,RUN_ID=pilot_vq scripts/slurm/tok.sbatch` -> job 2796353.
 - FIR channel proven through the zellij pane (`hostname -f` = `login2.int.fir.alliancecan.ca`). `ssh -o BatchMode=yes` from this host is denied (publickey,keyboard-interactive), so every new ssh/rsync needs human MFA.
 - G0a numbers: not run yet (no pilot, no full runs).
 
