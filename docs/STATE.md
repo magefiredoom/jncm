@@ -1,12 +1,12 @@
 # STATE — jncm
 
-Last updated: 2026-11-08 (T5.4 JEPA configs, `jepa.sbatch`, joint-checkpoint eval, Phase 2 runbook done; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
+Last updated: 2026-11-08 (T4.4 gate report + joint eval support done; T5.4 JEPA configs, `jepa.sbatch`, joint-checkpoint eval, Phase 2 runbook done; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M4 complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, T4.3); **T5.1 (EMA)**, **T5.2 (VICReg)**, **T5.3 (JEPA joint trainer)**, **T5.3b (target chain + joint accounting)** and **T5.4 (JEPA configs, `jepa.sbatch`, joint-checkpoint eval, Phase 2 runbook)** complete and ticked. M5 has no unchecked agent task left; the next work is the human's gates G0a/G0/G1/G2 on FIR (do not start M6).
-- Last completed tasks: T5.4 (`configs/jepa_dev.yaml`, `configs/jepa_smoke.yaml`, `scripts/slurm/jepa.sbatch`, JEPA milestone checkpoints in `jncm/train_jepa.py`, joint checkpoints in `scripts/run_eval.py`, `--x` in `scripts/plot_curves.py`, `RUNBOOK.md` §3A); before that T5.3b (JEPA target chain `online | ema_clean` and SPEC 6.2 joint accounting), T5.3 (JEPA joint trainer), T5.2 (VICReg), T5.1 (EMA) and `scripts/g0a_report.py --runs`; before that, T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`.
+- Milestone / task in progress: M0–M4 complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1, T4.2, T4.3, T4.4); **T5.1 (EMA)**, **T5.2 (VICReg)**, **T5.3 (JEPA joint trainer)**, **T5.3b (target chain + joint accounting)** and **T5.4 (JEPA configs, `jepa.sbatch`, joint-checkpoint eval, Phase 2 runbook)** complete and ticked. M5 has no unchecked agent task left; the next work is the human's gates G0a/G0/G1/G2 on FIR (do not start M6).
+- Last completed tasks: T4.4 (`scripts/gate_report.py` G0/G1/G2 table with interpolation, `eval.sbatch` without a required `TOKENIZER`, `RUNBOOK.md` §3B); before that T5.4 (`configs/jepa_dev.yaml`, `configs/jepa_smoke.yaml`, `scripts/slurm/jepa.sbatch`, JEPA milestone checkpoints in `jncm/train_jepa.py`, joint checkpoints in `scripts/run_eval.py`, `--x` in `scripts/plot_curves.py`, `RUNBOOK.md` §3A); before that T5.3b (JEPA target chain `online | ema_clean` and SPEC 6.2 joint accounting), T5.3 (JEPA joint trainer), T5.2 (VICReg), T5.1 (EMA) and `scripts/g0a_report.py --runs`; before that, T4.3 (RUNBOOK): FIR sync via a private git remote with a `git rev-parse HEAD` match check, data/GPT-2 transfer (MFA), G0a recap on `tok_vq_10k`/`tok_noisy_10k`, G0 vq+ce submit/eval/merge/plot, Phase 1 flow+regress with the T1.2 10.80 / 4.03 reference ratios, and a paste-back section; every wall clock is `<WALL_CLOCK>`.
 - T3.5 acceptance passes as written in TASKS.md: `ce` and `flow` memorise 8 sequences; `regress` memorises one unconditional sequence and, with the true level-1 code supplied, reproduces all 8 sequences when sampling levels 2..K.
 - All five Slurm templates now exist (`prep`, `tok`, `gen`, `eval`, `jepa`); `eval.sbatch` evaluates milestone checkpoints with one array task per seed (joint JEPA checkpoints included) and `jepa.sbatch` runs the Phase-2 arms from `SETS`.
 - T4.2 milestone checkpoints: the generator trainer writes `ckpt/milestone_<pct>.pt` at 10/25/50/100% of the budget when `generator.train.save_milestones` is on (default), and `run_eval.py` evaluates exactly those by default.
@@ -24,6 +24,17 @@ Rule: newest information wins. Rewrite sections; do not append history.
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither 10k job had been polled when this table was written, so their state is UNVERIFIED beyond the submit record.
 
 ## VERIFIED (command + last lines of output)
+
+### T4.4 gate report + joint eval support — VERIFIED 2026-11-08
+- Focused: `.venv/Scripts/python.exe -m pytest -q tests/test_gate_report.py tests/test_eval_sbatch.py`
+  `11 passed in 0.28s`  (EXIT=0)
+- Full non-slow suite: `.venv/Scripts/python.exe -m pytest -q -m "not slow"`
+  `207 passed, 4 deselected in 52.11s`  (EXIT=0, `set -o pipefail`)
+- `scripts/gate_report.py` CLI on this host (no cluster results yet): prints the header, four `MISSING (missing results/<run>/eval)` lines and exit 1, as designed.
+- `bash -n scripts/slurm/eval.sbatch` -> `BASH_N_EXIT=0`.
+- `scripts/slurm/eval.sbatch`: `TOKENIZER` is optional (the path is only checked when `[[ -n "${TOKENIZER:-}" ]]`) and `--tokenizer` is appended to the `run_eval.py` argv only when it is set, so a joint `train_jepa` checkpoint evaluates without it. The tests run the script body in a fixture tree whose `.venv/bin/activate` defines a recording `python` function: unset `TOKENIZER` -> exit 0 with no `--tokenizer` in the argv; a tokenizer path -> `--tokenizer <path>` in the argv; a missing tokenizer path -> exit 1 with `not found` and no python call. Before this task the unset case aborted at the `:?` guard, so `test_joint_run_needs_no_tokenizer` is the regression test.
+- `scripts/gate_report.py` fixture tests (`tests/test_gate_report.py`, 6 tests, tmp_path only): one table row per milestone carrying `18.40 +/- 0.10`, `1.704` (18.40/10.80) and `-0.080` (H delta), with per-seed shards ignored; G0 PASS/FAIL per milestone (`G0 step 100 (50%): PASS`, `G0 step 200 (100%): FAIL`, `G0: FAIL`, exit 1); G1 flow interpolating G0 between two milestones (17.00 vs interpolated 15.00 -> `ratio 1.133` PASS) and printing `not comparable at total_positions 1000 (outside gen_vq_ce_dev [100, 300])`; regress reported only with `FLAG pairwise_agree > 0.5`; ratio 1.200 -> `G1 (gen_noisy_flow_dev): FAIL` and exit 1; G2 under both accountings (`G2 (accounting: total_positions): PASS (1 compared)` with `best Phase-1 gen_noisy_flow_dev 12.00 +/- 0.50 (limit 12.50)`, and `G2 (accounting: total_positions_conservative): not comparable`), a worse JEPA arm FAILing, and missing runs printing `MISSING` with exit 1.
+- No real numbers were produced: every gate-report fixture lives under pytest `tmp_path`, and this host still has no real eval aggregates (no cluster runs).
 
 ### T5.4 JEPA configs, sbatch, joint eval, Phase 2 runbook — VERIFIED 2026-11-08
 - Focused: `.venv/Scripts/python.exe -m pytest -q tests/test_jepa_configs.py tests/test_jepa_sbatch.py tests/test_plot_curves.py tests/test_run_eval.py tests/test_train_jepa.py`
@@ -275,6 +286,11 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 4. **Q8 resolved: keep SPEC 5.1 and the deterministic `regress` head.** Level 1 has one position and zero conditioning, so a deterministic head can only emit one code. The old 8-sequence unconditional acceptance was an invalid test, not a model bug. T3.5 now accepts (a) one unconditional fixed sequence at >= 0.90 and (b) the true level-1 code supplied, sampling levels 2..K, all 8 sequences at >= 0.90. SPEC 5.1 and the regress head are unchanged.
 5. **G0a tokenizer budget cut to 10,000 steps (allocation saving, 2026-11-07).** The dev tokenizers run as `tok_vq_10k` (job 2880034) and `tok_noisy_10k` (job 2880035) with `STEPS=10000` and `--time=04:00:00` instead of the 40,000-step SPEC 4.4 dev budget; the 24 h `jncm_tok` job 2800220 was cancelled. SPEC 4.4 and the G0a thresholds are unchanged (`acc_full` >= 0.999 vq / 0.995 noisy on `data_source=real`, checked by `scripts/g0a_report.py` on the final record); these two runs are the budget-limited pair the gate is judged on.
 
+## Files touched in T4.4
+- Scripts: `scripts/gate_report.py` (new: G0/G1/G2 table + verdicts, interpolation, both accountings), `scripts/slurm/eval.sbatch` (`TOKENIZER` optional, `--tokenizer` only when set).
+- Tests: `tests/test_gate_report.py` (new, 6 fixture tests), `tests/test_eval_sbatch.py` (fixture-tree runs: joint run without `TOKENIZER`, `--tokenizer` when set, missing tokenizer fails loudly).
+- Docs: `RUNBOOK.md` (§3A.3 `TOKENIZER` optional, new §3B gate report), `docs/TASKS.md` (T4.4), `docs/STATE.md` (SPEC.md not edited).
+
 ## Files touched in T5.4
 - Configs: `configs/jepa_dev.yaml`, `configs/jepa_smoke.yaml` (new).
 - Code: `jncm/train_jepa.py` (milestone checkpoints via `milestone_steps`), `scripts/run_eval.py` (`is_joint_checkpoint`, `tokenizer_from_joint_checkpoint`, joint metadata, optional `--tokenizer`), `scripts/plot_curves.py` (`--x`, `x_position`).
@@ -347,6 +363,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Docs: `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (SPEC.md not edited).
 
 ## UNVERIFIED / not run
+- T4.4 `scripts/gate_report.py` is fixture-tested only: it has never run on real eval aggregates (no cluster results yet), so no G0/G1/G2 verdict above is a real result.
 - T0.2 and T1.2 are verified on this host (see VERIFIED); they are not yet repeated on FIR.
 - T3.5: verified only at CPU smoke scale and on the 600–1200 step memorization runs above. Real generator runs (H=768, 12 layers, batch 1024, 10k steps, about 1.3B positions, SPEC 5.7) are untested; Gen PPL in T3.5 used a fake scorer (the real GPT-2 path is verified separately by T1.2). The `regress` memorization arm is structurally blocked (Q8).
 - T3.1–T3.4 were verified on eval-mode modules; T3.5 is the first end-to-end (tokenizer -> generator -> decode) check, but only on 8 fixed sequences.
@@ -367,7 +384,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 9. FIR `~/jncm` is not a git repository (`git log` -> `fatal: not a git repository`); the tree was extracted from the tar, so cluster runs cannot write a real `git_sha.txt`. `RUNBOOK.md` §1.1 replaces it with a clone of the private remote; until then, compare cluster results against the local commit recorded here. The current remote `scripts/slurm/tok.sbatch` is also the pre-h100 copy (`--gres=gpu:1`), so pass `--gres=gpu:h100:1` on the command line.
 10. RESOLVED 2026-11-07: `scripts/g0a_report.py` takes `--runs` (default `tok_vq_10k tok_noisy_10k`) and keys the thresholds on each run's quantizer variant (0.999 vq / 0.995 noisy), read from `results/<run_id>/config.yaml` (`tokenizer.quantizer`) with a run-id fallback; an unknown variant fails loudly. The 10k gate pair can now be judged directly.
 11. With `jepa.vicreg` on and `head=flow`, the VICReg c-hat term integrates the flow (`flow_steps` network calls per level) inside the loss (Q11), so a JEPA flow step costs more than a Phase-1 flow step; `regress` has no such overhead. The EMA copy also holds the tokenizer decoder, which the target chain never uses (Q10).
-12. `scripts/slurm/eval.sbatch` still requires `TOKENIZER`; for a JEPA run `run_eval.py` takes the tokenizer from the joint checkpoint, so the Phase-1 path only satisfies the script's existence check (RUNBOOK §3A.3).
+12. RESOLVED 2026-11-08 (T4.4): `scripts/slurm/eval.sbatch` no longer requires `TOKENIZER`. It passes `--tokenizer` only when the variable is set, so a joint JEPA run (`run_eval.py` reads the tokenizer from the joint checkpoint) works without it; a staged run still needs `TOKENIZER=<path>` (RUNBOOK §3A.3).
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.

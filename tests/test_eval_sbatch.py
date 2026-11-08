@@ -64,3 +64,72 @@ def test_eval_sbatch_follows_the_t4_1_conventions() -> None:
         assert variable in text, variable
     assert "TODO(placeholder)" in text
     assert "results/" in text
+
+
+def _fixture_repo(tmp_path: Path) -> Path:
+    """Minimal tree for the script body, plus a fake python that echoes argv."""
+    root = tmp_path / "repo"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "run_eval.py").write_text("", encoding="utf-8")
+    (root / "results" / "fake_run" / "ckpt").mkdir(parents=True)
+    venv = root / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "activate").write_text(
+        "python() { printf 'PYTHON_ARGS'; printf ' %s' \"$@\"; printf '\\n'; }\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _run_eval_sbatch(
+    root: Path, extra_env: dict[str, str]
+) -> subprocess.CompletedProcess:
+    """Run the sbatch body in the fixture tree with a controlled environment."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"TOKENIZER", "RUN_ID", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
+    }
+    env.update({"SLURM_SUBMIT_DIR": str(root), "RUN_ID": "fake_run"})
+    env.update(extra_env)
+    return subprocess.run(
+        [BASH, str(SCRIPT.resolve())],
+        cwd=str(root),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_joint_run_needs_no_tokenizer(tmp_path: Path) -> None:
+    """T4.4: a joint JEPA run must not require TOKENIZER."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {})
+
+    assert result.returncode == 0, result.stderr
+    assert "PYTHON_ARGS scripts/run_eval.py" in result.stdout
+    assert "--tokenizer" not in result.stdout
+    assert "--run_id fake_run" in result.stdout
+
+
+def test_tokenizer_is_passed_when_set(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+    tokenizer = root / "results" / "tok.pt"
+    tokenizer.write_bytes(b"")
+
+    result = _run_eval_sbatch(root, {"TOKENIZER": str(tokenizer)})
+
+    assert result.returncode == 0, result.stderr
+    assert "--tokenizer" in result.stdout
+    assert str(tokenizer) in result.stdout
+
+
+def test_missing_tokenizer_still_fails_loudly(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"TOKENIZER": "results/nope.pt"})
+
+    assert result.returncode == 1
+    assert "not found" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout

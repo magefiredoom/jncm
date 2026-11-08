@@ -28,8 +28,11 @@
 # scripts/plot_curves.py reads. Running scripts/run_eval.py once without --seeds
 # does all seeds in one process and writes the aggregate directly.
 #
-# TOKENIZER is the frozen tokenizer checkpoint the generator was trained with;
-# RUN_ID names results/<RUN_ID>/ (its ckpt/milestone_*.pt files are evaluated).
+# TOKENIZER is optional. A staged (Phase-1) generator run needs the frozen
+# tokenizer checkpoint it was trained with; a joint train_jepa (JEPA) checkpoint
+# carries its own tokenizer, so leave TOKENIZER unset for those runs and
+# run_eval.py reads it from the checkpoint. RUN_ID names results/<RUN_ID>/ (its
+# ckpt/milestone_*.pt files are evaluated).
 # N_SEEDS (default 5) and N_SAMPLES (default 256) match SPEC 6.1; GPT2_MODEL_PATH
 # defaults to models/gpt2-large.
 #
@@ -45,14 +48,15 @@
 set -euo pipefail
 
 : "${RUN_ID:?set RUN_ID, e.g. sbatch --export=ALL,RUN_ID=gen_vq_ce_dev TOKENIZER=results/tok_vq_dev/ckpt/latest.pt scripts/slurm/eval.sbatch}"
-: "${TOKENIZER:?set TOKENIZER to the frozen tokenizer checkpoint of the generator, e.g. TOKENIZER=results/tok_vq_dev/ckpt/latest.pt}"
+# TOKENIZER stays unset for a joint JEPA checkpoint (it carries its own
+# tokenizer); when it is set, the file must exist.
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 if [[ ! -f scripts/run_eval.py ]]; then
   echo "ERROR: scripts/run_eval.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
 fi
-if [[ ! -f "${TOKENIZER}" ]]; then
+if [[ -n "${TOKENIZER:-}" && ! -f "${TOKENIZER}" ]]; then
   echo "ERROR: tokenizer checkpoint ${TOKENIZER} not found" >&2
   exit 1
 fi
@@ -83,7 +87,11 @@ cmd=(
   python scripts/run_eval.py
   --config configs/tinystories_dev.yaml
   --run_id "${RUN_ID}"
-  --tokenizer "${TOKENIZER}"
+)
+if [[ -n "${TOKENIZER:-}" ]]; then
+  cmd+=(--tokenizer "${TOKENIZER}")
+fi
+cmd+=(
   --seeds "${seed}"
   --n_seeds "${n_seeds}"
   --n_samples "${n_samples}"

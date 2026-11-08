@@ -319,17 +319,17 @@ tail -n 2 results/jepa_base_dev/metrics.jsonl
 
 ### 3A.3 Evaluate and plot
 
-`eval.sbatch` still requires `TOKENIZER` to exist; a JEPA checkpoint carries its
-own tokenizer, so for these runs `run_eval.py` reads it from the joint
-checkpoint and the Phase-1 path only satisfies the script's check. One array
-task per seed (`--array=0-4`), 4 milestone checkpoints each:
+`TOKENIZER` is optional: a joint JEPA checkpoint carries its own tokenizer, so
+leave it unset for Phase 2 and `run_eval.py` reads the tokenizer from the
+checkpoint. (Set `TOKENIZER=<path>` only for a staged Phase-0/Phase-1 run.) One
+array task per seed (`--array=0-4`), 4 milestone checkpoints each:
 
 ```bash
 cd ~/jncm
 for r in jepa_base_dev jepa_no_vicreg_dev jepa_no_dec_through_E_dev \
          jepa_neither_dev jepa_ema_clean_dev jepa_regress_dev jepa_no_ema_dev; do
   sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
-    --export=ALL,RUN_ID="$r",TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+    --export=ALL,RUN_ID="$r" \
     scripts/slurm/eval.sbatch
 done
 ```
@@ -413,6 +413,53 @@ PY
 Paste per-level `std` (c_k and t_k), both effective ranks, `R2`, the collapse
 alarm with its consecutive-step counts, Gen PPL ratio to the 10.80 data row
 (`ppl_mean / 10.80`), and `pairwise_agree` for every arm.
+
+## 3B. Gate report: G0, G1 and G2 in one command
+
+`scripts/gate_report.py` reads only the merged eval aggregates
+(`results/<run_id>/eval/step_<n>.json`, so run every `--merge` first: §2.2, §3,
+§3A.3). It prints one table -- Gen PPL mean +/- std, PPL/10.80, H(gpt2) and
+H-4.03, H(dataset), `unique_frac`, `pairwise_agree`, `total_positions` and
+`total_positions_conservative`, one row per milestone -- then the verdict lines.
+No GPU and no torch: it runs on a login node.
+
+```bash
+cd ~/jncm
+python scripts/gate_report.py
+echo "EXIT=$?"
+```
+
+Defaults: G0 `gen_vq_ce_dev`, flow `gen_noisy_flow_dev`, regress
+`gen_noisy_regress_dev`, JEPA `jepa_base_dev`. To judge every Phase-2 arm
+against the best Phase-1 run:
+
+```bash
+cd ~/jncm
+python scripts/gate_report.py --jepa jepa_base_dev jepa_no_vicreg_dev \
+  jepa_no_dec_through_E_dev jepa_neither_dev jepa_ema_clean_dev \
+  jepa_regress_dev jepa_no_ema_dev
+echo "EXIT=$?"
+```
+
+How it judges (thresholds are the TASKS gates, reference row is T1.2):
+
+- **G0:** Gen PPL `<= 20` and H(gpt2) `>= 3.8` at every milestone.
+- **G1 flow:** Gen PPL ratio to G0 `<= 1.15` at equal `total_positions`, and
+  `|H(gpt2) - 4.03| <= 0.15`, at every milestone. Requires at least one
+  comparable milestone, else the verdict is `not comparable`.
+- **G1 regress:** reported only (no verdict); a milestone with
+  `pairwise_agree > 0.5` is marked `FLAG` (collapse onto one sample).
+- **G2:** for every JEPA milestone, Gen PPL `<=` the best Phase-1
+  (flow/regress) Gen PPL at equal positions plus that run's interpolated
+  `ppl_std`; judged once under `total_positions` and once under
+  `total_positions_conservative`, and each verdict line names its accounting.
+- Equal positions are compared by linear interpolation of Gen PPL (and its
+  std) between the two surrounding milestones of the reference curve. A
+  position outside the reference curve's observed range prints
+  `not comparable`; nothing is extrapolated.
+- Exit code `1` if a gate FAILs or a run has no merged eval records (`MISSING`),
+  else `0`. `not comparable` is not a failure -- it means the runs do not
+  overlap in positions yet.
 
 ## 4. Paste back (metrics tails for review)
 
