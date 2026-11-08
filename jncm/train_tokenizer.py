@@ -21,7 +21,7 @@ import torch.nn.functional as F
 from jncm.config import Config, load_config, save_config
 from jncm.data import InfiniteBatchIterator, MemmapDataset
 from jncm.tokenizer.trunk import MultiscaleTokenizer
-from jncm.utils import JSONLLogger, bits_per_position, seed_everything
+from jncm.utils import JSONLLogger, bits_per_position, seed_everything, write_done
 
 
 def get_git_sha() -> str:
@@ -158,6 +158,7 @@ def run_diagnostics(
     cfg: Config,
     loss_val: float,
     current_lr: float,
+    sec_per_step: float,
     data_source: str = "unknown",
 ) -> dict[str, Any]:
     """
@@ -180,6 +181,7 @@ def run_diagnostics(
             "step": step,
             "train_loss": float(loss_val),
             "lr": float(current_lr),
+            "sec_per_step": float(sec_per_step),
             "data_source": data_source,
             "acc_cum": acc_cum,
             "acc_full": float(acc_full),
@@ -289,6 +291,8 @@ def train(
     print(f"Starting training run {run_id} ({cfg.tokenizer.quantizer}) for {cfg.train.max_steps} steps on {device}...")
 
     recent_loss = 0.0
+    sec_per_step = 0.0
+    loop_start = time.time()
     for step in range(start_step, cfg.train.max_steps):
         curr_lr = get_lr(
             step,
@@ -320,6 +324,7 @@ def train(
 
         recent_loss = total_loss.item()
         tok_positions = (step + 1) * cfg.train.batch_size * cfg.L
+        sec_per_step = (time.time() - loop_start) / float(step + 1 - start_step)
 
         # Periodic diagnostics
         is_last = (step + 1 == cfg.train.max_steps)
@@ -332,6 +337,7 @@ def train(
                 cfg=cfg,
                 loss_val=recent_loss,
                 current_lr=curr_lr,
+                sec_per_step=sec_per_step,
                 data_source=data_source,
             )
             logger.log(metrics)
@@ -354,6 +360,7 @@ def train(
             torch.save(state, ckpt_file)
             torch.save(state, ckpt_dir / "latest.pt")
 
+    write_done(run_dir, step=cfg.train.max_steps, sec_per_step=sec_per_step)
     print(f"Training completed. Results written to {run_dir}")
     return run_dir
 

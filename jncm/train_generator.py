@@ -41,7 +41,7 @@ from jncm.train_tokenizer import (
     get_lr,
     setup_data,
 )
-from jncm.utils import JSONLLogger, seed_everything
+from jncm.utils import JSONLLogger, seed_everything, write_done
 
 DecodeFn = Callable[[list[int]], str]
 
@@ -288,6 +288,7 @@ def run_diagnostics(
     current_lr: float,
     tok_positions: int,
     gen_positions: int,
+    sec_per_step: float,
     data_source: str = "unknown",
     decode_fn: DecodeFn | None = None,
     scorer: Any = None,
@@ -316,6 +317,7 @@ def run_diagnostics(
         "train_loss": float(train_loss),
         "per_level_loss": [float(value) for value in per_level_loss],
         "lr": float(current_lr),
+        "sec_per_step": float(sec_per_step),
         "data_source": data_source,
         "tok_positions": int(tok_positions),
         "gen_positions": int(gen_positions),
@@ -448,6 +450,8 @@ def train(
 
     recent_loss = 0.0
     recent_per_level = [0.0] * tokenizer.K
+    sec_per_step = 0.0
+    loop_start = time.time()
     for step in range(start_step, gen_train.max_steps):
         curr_lr = get_lr(
             step,
@@ -475,6 +479,7 @@ def train(
         recent_loss = float(loss.detach())
         recent_per_level = [float(value.detach()) for value in per_level]
         gen_positions = (step + 1) * gen_train.batch_size * cfg.L
+        sec_per_step = (time.time() - loop_start) / float(step + 1 - start_step)
 
         is_last = step + 1 == gen_train.max_steps
         if (step + 1) % gen_train.eval_every == 0 or is_last or step == 0:
@@ -489,6 +494,7 @@ def train(
                 current_lr=curr_lr,
                 tok_positions=tok_positions,
                 gen_positions=gen_positions,
+                sec_per_step=sec_per_step,
                 data_source=data_source,
                 decode_fn=decode_fn,
                 scorer=scorer,
@@ -524,6 +530,7 @@ def train(
                 torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
                 torch.save(state, ckpt_dir / "latest.pt")
 
+    write_done(run_dir, step=gen_train.max_steps, sec_per_step=sec_per_step)
     print(f"Training completed. Results written to {run_dir}")
     return run_dir
 

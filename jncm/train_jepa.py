@@ -56,7 +56,7 @@ from jncm.train_tokenizer import (
     get_lr,
     setup_data,
 )
-from jncm.utils import JSONLLogger, seed_everything
+from jncm.utils import JSONLLogger, seed_everything, write_done
 
 
 def validate_jepa_config(cfg: Config) -> None:
@@ -129,6 +129,7 @@ def run_diagnostics(
     train_loss: float,
     current_lr: float,
     joint_positions: int,
+    sec_per_step: float,
     data_source: str,
     alarm: CollapseAlarm,
     momentum: float | None = None,
@@ -158,6 +159,7 @@ def run_diagnostics(
         "loss_vic": float(joint.loss_vic.detach()),
         "per_level_pred_loss": [float(value.detach()) for value in joint.per_level_pred],
         "lr": float(current_lr),
+        "sec_per_step": float(sec_per_step),
         "data_source": data_source,
         "cut": int(joint.cut),
         "head": cfg.generator.head,
@@ -287,6 +289,8 @@ def train(
         else {}
     )
 
+    sec_per_step = 0.0
+    loop_start = time.time()
     for step in range(start_step, gen_train.max_steps):
         curr_lr = get_lr(
             step,
@@ -320,6 +324,7 @@ def train(
         momentum = target_encoder.update(tokenizer, step) if target_encoder else None
 
         joint_positions = (step + 1) * gen_train.batch_size * cfg.L
+        sec_per_step = (time.time() - loop_start) / float(step + 1 - start_step)
 
         is_last = step + 1 == gen_train.max_steps
         if (step + 1) % gen_train.eval_every == 0 or is_last or step == 0:
@@ -334,6 +339,7 @@ def train(
                 train_loss=float(joint.loss.detach()),
                 current_lr=curr_lr,
                 joint_positions=joint_positions,
+                sec_per_step=sec_per_step,
                 data_source=data_source,
                 alarm=alarm,
                 momentum=momentum,
@@ -374,6 +380,7 @@ def train(
                 torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
                 torch.save(state, ckpt_dir / "latest.pt")
 
+    write_done(run_dir, step=gen_train.max_steps, sec_per_step=sec_per_step)
     print(f"Training completed. Results written to {run_dir}")
     return run_dir
 

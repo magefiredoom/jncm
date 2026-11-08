@@ -61,6 +61,14 @@ set -euo pipefail
 : "${TOKENIZER:?set TOKENIZER to a noisy tokenizer checkpoint, e.g. TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt (run scripts/slurm/tok.sbatch with QUANT=noisy first)}"
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+
+# T4.5: a finished run is a no-op (chained surplus chunks exit here, cheaply).
+done_file="results/${RUN_ID}/DONE"
+if [[ -f "${done_file}" ]]; then
+  echo "DONE exists at ${done_file}; ${RUN_ID} is finished, nothing to do"
+  exit 0
+fi
+
 if [[ ! -f jncm/train_jepa.py ]]; then
   echo "ERROR: jncm/train_jepa.py not found in ${PWD}; submit from the repo root" >&2
   exit 1

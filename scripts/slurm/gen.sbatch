@@ -29,6 +29,10 @@
 # HEAD chooses the head and, by the SPEC 5.3 pairing, the tokenizer variant:
 # ce -> vq, regress/flow -> noisy. TOKENIZER is the frozen tokenizer checkpoint
 # (from tok.sbatch), RUN_ID names results/<RUN_ID>/ and its resume checkpoint.
+# STEPS is optional (unset = the config budget, 10,000 in the dev config); the
+# pilots pass STEPS=300. GEN_PPL=1 appends --gen_ppl, which decodes the samples
+# and scores them through the local GPT-2-large (offline; config
+# eval.gpt2_model_path, models/gpt2-large); the pilots always turn it on.
 #
 # The compute node is offline: the HF_*_OFFLINE variables below forbid downloads
 # and any cache miss fails loudly instead of reaching the network.
@@ -54,6 +58,14 @@ case "${HEAD}" in
 esac
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+
+# T4.5: a finished run is a no-op (chained surplus chunks exit here, cheaply).
+done_file="results/${RUN_ID}/DONE"
+if [[ -f "${done_file}" ]]; then
+  echo "DONE exists at ${done_file}; ${RUN_ID} is finished, nothing to do"
+  exit 0
+fi
+
 if [[ ! -f jncm/train_generator.py ]]; then
   echo "ERROR: jncm/train_generator.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -86,6 +98,13 @@ cmd=(
   --set "tokenizer.quantizer=${quant}"
   --run_id "${RUN_ID}"
 )
+
+if [[ -n "${STEPS:-}" ]]; then
+  cmd+=(--steps "${STEPS}")
+fi
+if [[ "${GEN_PPL:-0}" == "1" ]]; then
+  cmd+=(--gen_ppl)
+fi
 
 if [[ -f "${ckpt}" ]]; then
   echo "Resuming ${RUN_ID} from ${ckpt}"

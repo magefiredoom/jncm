@@ -21,6 +21,108 @@ cd ~/jncm
 export SBATCH_ACCOUNT=def-cheng23     # only if your shell does not set it already
 ```
 
+## 0. Pilots first — go/no-go before any full run
+
+Our fair-share is over-used, so a 10,000-step run submitted whole waits too
+long. The launch kit submits short chunks that chain and resume: every trainer
+writes `results/<run_id>/DONE` when its final step completes and records
+`sec_per_step` in every metrics record; `scripts/slurm/chain.sh` submits
+`ceil(steps * sec_per_step / (0.9 * wall))` copies with
+`--dependency=afterany` (each resumes from `ckpt/latest.pt`, surplus chunks
+exit 0 on `DONE`); `scripts/launch_phase.sh` builds a whole phase from that.
+
+Run the pilot of a phase first and clear its checklist before the full run.
+
+```bash
+cd ~/jncm
+scripts/launch_phase.sh g0 pilot            # dry run: prints the exact plan
+scripts/launch_phase.sh g0 pilot --submit   # pilot_tok_vq (500 steps) -> pilot_gen_vq_ce (300) -> eval
+```
+
+The pilot is 500 tokenizer / 300 generator / 200 JEPA steps behind
+`--time 00:20:00`, uses run ids `pilot_*`, sets `GEN_PPL=1` on the generators
+and evaluates with `N_SAMPLES=32`, `N_SEEDS=1`. It never writes a full run id,
+so it cannot poison `tok_vq_10k`, `gen_vq_ce_dev`, .... A pilot that cannot
+finish inside the 20-minute wall is itself a stop signal: fix the speed before
+the full run.
+
+| Phase | Pilot run ids | Eval |
+| --- | --- | --- |
+| g0 | `pilot_tok_vq`, `pilot_gen_vq_ce` | `pilot_gen_vq_ce` |
+| g1 | `pilot_tok_noisy`, `pilot_gen_noisy_flow`, `pilot_gen_noisy_regress` | both generators |
+| g2 | `pilot_jepa_base` (plus six `pilot_jepa_*` ablations with `--ablations`) | every submitted arm |
+
+### 0.1 Go/no-go checklist (per pilot)
+
+Every line must hold for every pilot of the phase before its full run:
+
+| Check | Where to look | Pass |
+| --- | --- | --- |
+| No crash | `sacct -j <ids> --format=JobID,State,Elapsed,ExitCode` | all `COMPLETED`, `ExitCode 0:0` |
+| Real data | last `metrics.jsonl` record | `data_source` is `real` |
+| Finite losses | last `metrics.jsonl` record | `train_loss` finite (g2 also `loss_dec`, `loss_pred`, `loss_vic`); no NaN/inf |
+| Gen PPL hook ran offline | `results/pilot_gen_*/metrics.jsonl` | `gen_ppl` present; the job runs under `TRANSFORMERS_OFFLINE=1` against `models/gpt2-large` (the directory `GPT2_LARGE_PATH` points at), so a missing model fails the job instead of downloading |
+| Samples decode to text | `head -n 3 results/pilot_gen_*/samples/step_*.txt` | readable English, not token ids |
+| `pairwise_agree` present | last record of the flow AND regress pilots | both carry `pairwise_agree` (and `unique_frac`); `pairwise_agree > 0.5` is a collapse flag |
+| `sec_per_step` recorded | every `metrics.jsonl` record | a positive `sec_per_step`; it is what sizes the full chain |
+
+Paste back (well under 30 lines per run):
+
+```bash
+cd ~/jncm
+python - <<'PY'
+import glob, json, math, os
+
+for run in sorted(glob.glob("results/pilot_*")):
+    run_id = os.path.basename(run)
+    path = f"{run}/metrics.jsonl"
+    if not os.path.exists(path):
+        print(f"== {run_id}: no metrics.jsonl (not started, or failed early)")
+        continue
+    rows = [json.loads(line) for line in open(path) if line.strip()]
+    last = rows[-1]
+    finite = all(math.isfinite(float(v)) for k, v in last.items()
+                 if isinstance(v, (int, float)) and k != "step")
+    samples = sorted(glob.glob(f"{run}/samples/step_*.txt"))
+    print(f"== {run_id}: step {last['step']} data_source {last.get('data_source')} "
+          f"loss {last.get('train_loss'):.4f} finite {finite} "
+          f"sec_per_step {last.get('sec_per_step')}")
+    print(f"   gen_ppl {last.get('gen_ppl', 'n/a')} "
+          f"unique_frac {last.get('unique_frac', 'n/a')} "
+          f"pairwise_agree {last.get('pairwise_agree', 'n/a')} samples {len(samples)}")
+    if samples:
+        print("   " + open(samples[-1]).readline().strip()[:90])
+PY
+```
+
+`gen_ppl` is `n/a` for tokenizer and JEPA pilots by design (a JEPA run's Gen
+PPL belongs to its eval array, not the trainer). For g2 also require
+`collapse_alarm: false` on the last record.
+
+### 0.2 Full runs (same launcher)
+
+`n_chunks = ceil(steps * sec_per_step / (0.9 * wall))`, with `sec_per_step`
+from the latest matching pilot record and `--wall` defaulting to `03:00:00`.
+A tokenizer run that already has `DONE` is skipped. Without a pilot record and
+without `--sec_per_step` the launcher stops with an error.
+
+```bash
+cd ~/jncm
+scripts/launch_phase.sh g0 full                       # dry run: the exact chain
+scripts/launch_phase.sh g0 full --submit              # tok_vq_10k -> gen_vq_ce_dev -> eval
+scripts/launch_phase.sh g1 full --submit              # tok_noisy_10k -> flow + regress -> eval both
+scripts/launch_phase.sh g2 full --submit              # jepa_base_dev (+ eval)
+scripts/launch_phase.sh g2 full --submit --ablations  # base + six ablations, each with eval
+python scripts/budget.py                              # projected H100-hours; flags any run > 12 h
+```
+
+`--wall=HH:MM:SS` overrides the 3 h default; `--sec_per_step=X` supplies the
+speed when a pilot record is missing. Nothing is submitted without `--submit`;
+with it every chain prints its job ids and `CHAIN_LAST_ID`. Resubmitting the
+same command is always safe: chains resume from `ckpt/latest.pt` and finished
+chunks no-op on `DONE`. Then merge and judge the gate as in §2.2, §3, §3A.3
+and §3B.
+
 ## 1. Syncing FIR
 
 ### 1.1 Code: private git remote (preferred) — this is how code updates work

@@ -45,6 +45,16 @@ case "${QUANT}" in
 esac
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+
+# T4.5: a finished run is a no-op. Chained chunks beyond the real budget land
+# here and exit 0 before a venv, a module or a dataset is touched.
+run_id="${RUN_ID:-tok_${QUANT}_dev}"
+done_file="results/${run_id}/DONE"
+if [[ -f "${done_file}" ]]; then
+  echo "DONE exists at ${done_file}; ${run_id} is finished, nothing to do"
+  exit 0
+fi
+
 if [[ ! -f jncm/train_tokenizer.py ]]; then
   echo "ERROR: jncm/train_tokenizer.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -64,7 +74,6 @@ export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export PYTHONUNBUFFERED=1
 
-run_id="${RUN_ID:-tok_${QUANT}_dev}"
 ckpt="results/${run_id}/ckpt/latest.pt"
 
 cmd=(

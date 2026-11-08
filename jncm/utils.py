@@ -6,9 +6,41 @@ import json
 import math
 from pathlib import Path
 import random
+import time
 from typing import Any
 import numpy as np
 import torch
+
+# Marker written into results/<run_id>/ once the final training step completes
+# (T4.5). The Slurm templates exit 0 immediately when it exists.
+DONE_FILE = "DONE"
+
+
+def write_done(run_dir: str | Path, *, step: int, sec_per_step: float) -> Path:
+    """Write ``results/<run_id>/DONE`` after the final training step (T4.5).
+
+    The marker is what makes a chained surplus chunk a cheap no-op: every
+    template checks it before loading a venv or a dataset. ``sec_per_step`` is
+    the measured wall time per step over the looping part of this process, so
+    ``scripts/budget.py`` and ``scripts/launch_phase.sh`` can project a full
+    run from a short pilot.
+
+    Args:
+        run_dir: ``results/<run_id>`` directory of the finished run.
+        step: Final step number reached (``max_steps``).
+        sec_per_step: Seconds per training step measured in this process.
+
+    Returns:
+        The path of the DONE file.
+    """
+    path = Path(run_dir) / DONE_FILE
+    payload = {
+        "step": int(step),
+        "sec_per_step": float(sec_per_step),
+        "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return path
 
 
 def seed_everything(seed: int = 42) -> None:
