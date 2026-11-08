@@ -21,6 +21,10 @@ and a collapse alarm that fires after 200 consecutive steps with mean std < 0.1
 = steps * B * L, ``total_positions = joint_positions`` and
 ``total_positions_conservative = 2 * joint_positions`` (the count comparable to
 a staged run when both objectives are charged).
+
+Milestone checkpoints (``ckpt/milestone_<pct>.pt`` at 10/25/50/100% of the
+budget) are written when ``generator.train.save_milestones`` is on (the
+default), matching the Phase-1 trainer; ``scripts/run_eval.py`` evaluates them.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from jncm.train_generator import (
     build_generator,
     build_optimizer,
     load_tokenizer,
+    milestone_steps,
 )
 from jncm.train_tokenizer import (
     detect_data_source,
@@ -276,6 +281,12 @@ def train(
         f"for {gen_train.max_steps} steps on {device}..."
     )
 
+    milestones = (
+        milestone_steps(gen_train.max_steps, gen_train.milestones)
+        if gen_train.save_milestones
+        else {}
+    )
+
     for step in range(start_step, gen_train.max_steps):
         curr_lr = get_lr(
             step,
@@ -337,7 +348,9 @@ def train(
                 f"joint_pos: {joint_positions}"
             )
 
-        if (step + 1) % gen_train.save_every == 0 or is_last:
+        milestone = milestones.get(step + 1)
+        is_periodic = (step + 1) % gen_train.save_every == 0 or is_last
+        if is_periodic or milestone is not None:
             state = {
                 "step": step,
                 "tokenizer": tokenizer.state_dict(),
@@ -352,8 +365,14 @@ def train(
                 "total_positions": joint_positions,
                 "total_positions_conservative": 2 * joint_positions,
             }
-            torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
-            torch.save(state, ckpt_dir / "latest.pt")
+            if milestone is not None:
+                torch.save(
+                    {**state, "milestone": milestone},
+                    ckpt_dir / f"milestone_{round(milestone * 100):03d}.pt",
+                )
+            if is_periodic:
+                torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
+                torch.save(state, ckpt_dir / "latest.pt")
 
     print(f"Training completed. Results written to {run_dir}")
     return run_dir

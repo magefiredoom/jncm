@@ -344,6 +344,50 @@ def test_resume_continues_step_and_positions(tmp_path: Path) -> None:
     assert state["tok_offset"] == 99
 
 
+def test_milestones_are_saved_behind_the_flag(tmp_path: Path) -> None:
+    """T5.4: milestone checkpoints at 10/25/50/100% for run_eval."""
+    cfg = _cfg()
+    cfg.generator.train.milestones = [0.1, 0.5, 1.0]
+    cfg.generator.train.eval_every = 10**9
+    cfg.generator.train.save_every = 1000
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L)))
+
+    run_dir = train(
+        cfg,
+        ckpt,
+        max_steps=10,
+        run_id="jepa_milestones",
+        results_dir=tmp_path / "results",
+        data_dir=data_dir,
+        allow_synthetic=False,
+    )
+
+    ckpt_dir = run_dir / "ckpt"
+    names = sorted(path.name for path in ckpt_dir.glob("milestone_*.pt"))
+    assert names == ["milestone_010.pt", "milestone_050.pt", "milestone_100.pt"]
+
+    state = torch.load(ckpt_dir / "milestone_050.pt", map_location="cpu")
+    assert state["milestone"] == pytest.approx(0.5)
+    assert state["step"] + 1 == 5
+    assert state["joint_positions"] == 5 * cfg.generator.train.batch_size * cfg.L
+    assert state["total_positions_conservative"] == 2 * state["joint_positions"]
+    for key in ("tokenizer", "backbone", "head", "ema", "optimizer_state_dict"):
+        assert key in state, key
+
+    cfg.generator.train.save_milestones = False
+    run_off = train(
+        cfg,
+        ckpt,
+        max_steps=4,
+        run_id="jepa_no_milestones",
+        results_dir=tmp_path / "results",
+        data_dir=data_dir,
+        allow_synthetic=False,
+    )
+    assert not list((run_off / "ckpt").glob("milestone_*.pt"))
+
+
 def test_validate_rejects_phase1_configs() -> None:
     vq = _cfg()
     vq.tokenizer.quantizer = "vq"

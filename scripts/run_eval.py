@@ -1,10 +1,17 @@
 #!/usr/bin/env python
 """Evaluate generator checkpoints (SPEC 6.1/6.2, TASKS T4.2).
 
-Loads a generator checkpoint and the frozen tokenizer it was trained against,
-samples ``n_samples`` sequences for each seed, and reports Gen PPL (mean/std
-over seeds), unigram entropy H on GPT-2 tokens and on dataset tokens, the SPEC
-6.1 diversity metrics, and the position accounting recorded in the checkpoint.
+Loads a generator checkpoint and the tokenizer it was trained against, samples
+``n_samples`` sequences for each seed, and reports Gen PPL (mean/std over
+seeds), unigram entropy H on GPT-2 tokens and on dataset tokens, the SPEC 6.1
+diversity metrics, and the position accounting recorded in the checkpoint.
+
+A staged (Phase-1) checkpoint needs the frozen tokenizer passed with
+``--tokenizer``. A ``train_jepa`` joint checkpoint carries its own tokenizer
+under the ``tokenizer`` key, so no ``--tokenizer`` is needed for it, and its
+records carry the SPEC 6.2 joint accounting (``joint_positions``,
+``total_positions`` and ``total_positions_conservative``) instead of the staged
+``tok_positions``/``gen_positions`` pair.
 
 The trainer writes milestone checkpoints at 10/25/50/100% of the budget to
 ``results/<run_id>/ckpt/milestone_<pct>.pt`` when ``generator.train.save_milestones``
@@ -58,7 +65,9 @@ META_KEYS = (
     "fraction",
     "tok_positions",
     "gen_positions",
+    "joint_positions",
     "total_positions",
+    "total_positions_conservative",
     "n_samples",
     "n_seeds",
 )
@@ -70,6 +79,23 @@ def _gpt2_ids(gpt2_tokenizer: Any, text: str) -> list[int]:
     if hasattr(ids, "ids"):
         ids = ids.ids
     return [int(token) for token in ids]
+
+
+def is_joint_checkpoint(state: dict[str, Any]) -> bool:
+    """True for a ``train_jepa`` checkpoint (tokenizer and generator together)."""
+    return "tokenizer" in state
+
+
+def tokenizer_from_joint_checkpoint(
+    state: dict[str, Any], cfg: Config
+) -> MultiscaleTokenizer:
+    """Rebuild the online tokenizer stored inside a joint checkpoint."""
+    tokenizer = MultiscaleTokenizer(cfg.tokenizer, L=cfg.L, V=cfg.V)
+    tokenizer.load_state_dict(state["tokenizer"])
+    tokenizer.eval()
+    for parameter in tokenizer.parameters():
+        parameter.requires_grad_(False)
+    return tokenizer
 
 
 def resolve_checkpoint_config(
@@ -90,6 +116,11 @@ def resolve_checkpoint_config(
             f"checkpoint {checkpoint} L={saved.get('L')}, V={saved.get('V')} "
             f"does not match config L={cfg.L}, V={cfg.V}"
         )
+    if is_joint_checkpoint(state):
+        # A joint checkpoint carries its encoder and generator together, so its
+        # own config is authoritative: there is no separate tokenizer
+        # checkpoint whose head, quantizer or K could disagree with it.
+        return config_from_dict(saved)
     saved_generator = saved.get("generator") or {}
     if saved_generator.get("head", cfg.generator.head) != cfg.generator.head:
         raise ValueError(
@@ -119,23 +150,34 @@ def _checkpoint_meta(
     """Validate the checkpoint against ``cfg`` and build the shared metadata."""
     resolve_checkpoint_config(cfg, state, checkpoint)
     step = int(state["step"]) + 1
-    tok_positions = int(state.get("tok_positions", 0))
-    gen_positions = int(
-        state.get(
-            "gen_positions", step * cfg.generator.train.batch_size * cfg.L
-        )
-    )
-    return {
+    meta: dict[str, Any] = {
         "run_id": run_id,
         "checkpoint": str(checkpoint),
         "step": step,
         "fraction": state.get("milestone"),
-        "tok_positions": tok_positions,
-        "gen_positions": gen_positions,
-        "total_positions": tok_positions + gen_positions,
-        "n_samples": 0,
-        "n_seeds": 0,
     }
+    if state.get("total_positions_conservative") is not None:
+        joint_positions = int(
+            state.get("joint_positions", state.get("total_positions", 0))
+        )
+        meta["joint_positions"] = joint_positions
+        meta["total_positions"] = int(state.get("total_positions", joint_positions))
+        meta["total_positions_conservative"] = int(
+            state["total_positions_conservative"]
+        )
+    else:
+        tok_positions = int(state.get("tok_positions", 0))
+        gen_positions = int(
+            state.get(
+                "gen_positions", step * cfg.generator.train.batch_size * cfg.L
+            )
+        )
+        meta["tok_positions"] = tok_positions
+        meta["gen_positions"] = gen_positions
+        meta["total_positions"] = tok_positions + gen_positions
+    meta["n_samples"] = 0
+    meta["n_seeds"] = 0
+    return meta
 
 
 def aggregate_records(
@@ -292,7 +334,11 @@ def merge_shards(eval_dir: str | Path) -> list[Path]:
     written: list[Path] = []
     for key in sorted(groups):
         records = groups[key]
-        meta = {name: records[0].get(name) for name in META_KEYS}
+        meta = {
+            name: value
+            for name in META_KEYS
+            if (value := records[0].get(name)) is not None
+        }
         path = directory / f"{key}.json"
         _write_json(path, aggregate_records(records, meta=meta))
         written.append(path)
@@ -303,7 +349,7 @@ def run_eval(
     cfg: Config,
     *,
     run_id: str,
-    tokenizer_ckpt: str | Path,
+    tokenizer_ckpt: str | Path | None = None,
     results_dir: str | Path = "results",
     data_dir: str | Path = "data/tinystories",
     n_samples: int = 256,
@@ -337,14 +383,26 @@ def run_eval(
     if decode_fn is None:
         decode_fn = build_decode_fn(Path(data_dir) / "tokenizer.json")
 
-    tokenizer, _ = load_tokenizer(tokenizer_ckpt, cfg)
-    tokenizer = tokenizer.to(device_obj)
-    tokenizer.eval()
+    shared_tokenizer: MultiscaleTokenizer | None = None
 
     written: list[Path] = []
     for checkpoint in ckpts:
         state = torch.load(checkpoint, map_location="cpu")
         model_cfg = resolve_checkpoint_config(cfg, state, Path(checkpoint))
+        if is_joint_checkpoint(state):
+            tokenizer = tokenizer_from_joint_checkpoint(state, model_cfg)
+        else:
+            if tokenizer_ckpt is None:
+                raise ValueError(
+                    f"checkpoint {checkpoint} is a staged generator checkpoint; "
+                    "pass --tokenizer (a joint JEPA checkpoint carries its own)"
+                )
+            if shared_tokenizer is None:
+                shared_tokenizer, _ = load_tokenizer(tokenizer_ckpt, cfg)
+                shared_tokenizer = shared_tokenizer.to(device_obj)
+                shared_tokenizer.eval()
+            tokenizer = shared_tokenizer
+        tokenizer = tokenizer.to(device_obj).eval()
         backbone, head = build_generator(model_cfg, tokenizer)
         backbone.load_state_dict(state["backbone"])
         head.load_state_dict(state["head"])
@@ -379,12 +437,17 @@ def run_eval(
             path = eval_dir / f"step_{aggregate['step']:06d}.json"
             _write_json(path, aggregate)
             written.append(path)
-            print(
+            line = (
                 f"step {aggregate['step']} ({aggregate['fraction']}): "
                 f"Gen PPL {aggregate['ppl_mean']:.2f} +/- "
                 f"{aggregate['ppl_std']:.2f}, total_positions "
                 f"{aggregate['total_positions']}"
             )
+            if aggregate.get("total_positions_conservative") is not None:
+                line += (
+                    f" (conservative {aggregate['total_positions_conservative']})"
+                )
+            print(line)
     return written
 
 
@@ -395,7 +458,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--run_id", required=True, help="results/<run_id> of the generator run")
     parser.add_argument("--config", type=str, default="configs/tinystories_dev.yaml")
-    parser.add_argument("--tokenizer", type=str, default=None)
+    parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default=None,
+        help=(
+            "Frozen tokenizer checkpoint for a staged generator run; a joint "
+            "train_jepa checkpoint carries its own and needs none"
+        ),
+    )
     parser.add_argument("--data_dir", type=str, default="data/tinystories")
     parser.add_argument(
         "--ckpt",
@@ -430,8 +501,6 @@ def main(argv: list[str] | None = None) -> None:
             print(f"wrote {path}")
         return
 
-    if args.tokenizer is None:
-        parser.error("--tokenizer is required unless --merge is used")
     cfg = load_config(args.config)
     seeds = None
     if args.seeds:

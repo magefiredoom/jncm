@@ -22,6 +22,7 @@ from jncm.train_generator import (
     milestone_steps,
     train,
 )
+from jncm.train_jepa import train as train_jepa
 from jncm.utils import seed_everything
 from scripts.run_eval import (
     discover_milestones,
@@ -348,3 +349,94 @@ def test_trainer_saves_milestone_checkpoints_behind_the_flag(tmp_path: Path) -> 
         allow_synthetic=True,
     )
     assert not list((run_dir_off / "ckpt").glob("milestone_*.pt"))
+
+
+def _jepa_cfg() -> Config:
+    """configs/jepa_smoke.yaml shrunk to a fast CPU JEPA run."""
+    cfg = load_config(Path("configs/jepa_smoke.yaml"))
+    cfg.tokenizer.d = 32
+    cfg.tokenizer.decoder_heads = 4
+    cfg.generator.H = 32
+    cfg.generator.n_layers = 1
+    cfg.generator.n_heads = 2
+    cfg.generator.dropout = 0.0
+    cfg.generator.n_rep = 1
+    cfg.generator.flow_steps = 2
+    cfg.generator.train.batch_size = 4
+    cfg.eval.n_samples = 2
+    cfg.device = "cpu"
+    return cfg
+
+
+def test_run_eval_reads_a_joint_jepa_checkpoint(tmp_path: Path) -> None:
+    """T5.4: tokenizer and generator both come from the joint checkpoint."""
+    cfg = _jepa_cfg()
+    tok_ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    results = tmp_path / "results"
+
+    run_dir = train_jepa(
+        cfg,
+        tok_ckpt,
+        max_steps=20,
+        run_id="jepa_eval",
+        results_dir=results,
+        data_dir=data_dir,
+        allow_synthetic=True,
+    )
+    milestones = sorted(
+        path.name for path in (run_dir / "ckpt").glob("milestone_*.pt")
+    )
+    assert milestones == [
+        "milestone_010.pt",
+        "milestone_025.pt",
+        "milestone_050.pt",
+        "milestone_100.pt",
+    ]
+
+    written = run_eval(
+        cfg,
+        run_id="jepa_eval",
+        tokenizer_ckpt=None,
+        results_dir=results,
+        n_samples=2,
+        n_seeds=2,
+        decode_fn=_decode_fn,
+        scorer=_FakeScorer(),
+        gpt2_tokenizer=_FakeGPT2Tokenizer(),
+        device=torch.device("cpu"),
+    )
+
+    aggregates = sorted(path.name for path in written if ".seed_" not in path.name)
+    assert aggregates == [
+        "step_000002.json",
+        "step_000005.json",
+        "step_000010.json",
+        "step_000020.json",
+    ]
+    record = json.loads(
+        (run_dir / "eval" / "step_000020.json").read_text(encoding="utf-8")
+    )
+    for key in (
+        "ppl_mean",
+        "ppl_std",
+        "h_gpt2_mean",
+        "h_dataset_mean",
+        "unique_frac_mean",
+        "pairwise_agree_mean",
+        "joint_positions",
+        "total_positions",
+        "total_positions_conservative",
+    ):
+        assert key in record, key
+    joint_positions = 20 * cfg.generator.train.batch_size * cfg.L
+    assert record["joint_positions"] == joint_positions
+    assert record["total_positions"] == joint_positions
+    assert record["total_positions_conservative"] == 2 * joint_positions
+    assert "tok_positions" not in record and "gen_positions" not in record
+    assert record["ppl_mean"] == pytest.approx(math.exp(2.0))
+
+    merged = merge_shards(run_dir / "eval")
+    merged_record = json.loads(merged[-1].read_text(encoding="utf-8"))
+    assert merged_record["total_positions_conservative"] == 2 * joint_positions

@@ -1,7 +1,8 @@
 # RUNBOOK — jncm on FIR
 
-Operator commands for Gate G0a (tokenizers) and the Phase 0 / Phase 1 runs.
-Every wall clock is written `<WALL_CLOCK>` (`HH:MM:SS`); nothing else is blank.
+Operator commands for Gate G0a (tokenizers) and the Phase 0 / Phase 1 / Phase 2
+runs. Every wall clock is written `<WALL_CLOCK>` (`HH:MM:SS`); nothing else is
+blank.
 
 Fixed facts (from docs/STATE.md; do not re-derive):
 
@@ -243,6 +244,176 @@ How to judge (G1):
 - Also paste `unique_frac` and `pairwise_agree` for the record: a run that
   matches entropy while collapsing onto one sample is not a pass.
 
+## 3A. Phase 2 — JEPA joint mode (G2)
+
+The joint trainer updates the noisy tokenizer (E and D) and the generator G in
+one loop against EMA targets, starting from `results/tok_noisy_10k/ckpt/latest.pt`.
+Config `configs/jepa_dev.yaml`: head `flow`, `target_chain=online`, EMA on,
+VICReg on, `decoder_through_E` true, batch 1024, 10,000 steps. Sizes match the
+Phase-1 dev configs, so the milestone grids are comparable on the position axes.
+
+`RUN_ID` and `STEPS` travel in `--export`. `SETS` is exported in front of
+`sbatch` (not inside `--export`) because it carries spaces: one `key=value` per
+ablation override, each turned into `--set key=value` by the script. `STEPS`
+unset uses the config budget; `TOKENIZER` is the noisy tokenizer checkpoint.
+Every run resumes from `results/<RUN_ID>/ckpt/latest.pt` when that file exists,
+and writes `ckpt/milestone_{010,025,050,100}.pt` behind
+`generator.train.save_milestones` (on in the config).
+
+### 3A.1 Base run
+
+```bash
+cd ~/jncm
+ls -l results/tok_noisy_10k/ckpt/latest.pt
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_base_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+```
+
+### 3A.2 Ablations (same command, only `RUN_ID` and `SETS` change)
+
+| Run ID | `SETS` | Question |
+| --- | --- | --- |
+| `jepa_base_dev` | (empty) | base JEPA |
+| `jepa_no_vicreg_dev` | `jepa.vicreg=false` | is VICReg needed? |
+| `jepa_no_dec_through_E_dev` | `jepa.decoder_through_E=false` | does the decoder gradient into E help? |
+| `jepa_neither_dev` | `jepa.vicreg=false jepa.decoder_through_E=false` | 2x2 corner |
+| `jepa_ema_clean_dev` | `jepa.target_chain=ema_clean` | teacher-forced targets vs E-bar's own chain (SPEC 8 step 2) |
+| `jepa_regress_dev` | `generator.head=regress` | deterministic head instead of flow |
+| `jepa_no_ema_dev` | `jepa.ema=false` | is the EMA target needed at all? |
+
+```bash
+cd ~/jncm
+SETS="jepa.vicreg=false" \
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_no_vicreg_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+SETS="jepa.decoder_through_E=false" \
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_no_dec_through_E_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+SETS="jepa.vicreg=false jepa.decoder_through_E=false" \
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_neither_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+SETS="jepa.target_chain=ema_clean" \
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_ema_clean_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+SETS="generator.head=regress" \
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_regress_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+SETS="jepa.ema=false" \
+sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+  --export=ALL,RUN_ID=jepa_no_ema_dev,STEPS=10000,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  scripts/slurm/jepa.sbatch
+```
+
+Monitor:
+
+```bash
+squeue -u "$USER" -n jncm_jepa -o "%.8i %.12j %.8T %.10M %.12l"
+tail -n 2 results/jepa_base_dev/metrics.jsonl
+```
+
+### 3A.3 Evaluate and plot
+
+`eval.sbatch` still requires `TOKENIZER` to exist; a JEPA checkpoint carries its
+own tokenizer, so for these runs `run_eval.py` reads it from the joint
+checkpoint and the Phase-1 path only satisfies the script's check. One array
+task per seed (`--array=0-4`), 4 milestone checkpoints each:
+
+```bash
+cd ~/jncm
+for r in jepa_base_dev jepa_no_vicreg_dev jepa_no_dec_through_E_dev \
+         jepa_neither_dev jepa_ema_clean_dev jepa_regress_dev jepa_no_ema_dev; do
+  sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
+    --export=ALL,RUN_ID="$r",TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+    scripts/slurm/eval.sbatch
+done
+```
+
+When every array has finished (`sacct` shows `COMPLETED` for each task):
+
+```bash
+cd ~/jncm
+for r in jepa_base_dev jepa_no_vicreg_dev jepa_no_dec_through_E_dev \
+         jepa_neither_dev jepa_ema_clean_dev jepa_regress_dev jepa_no_ema_dev; do
+  python scripts/run_eval.py --run_id "$r" --merge
+done
+python scripts/plot_curves.py --x total_positions --out results/curves.png
+python scripts/plot_curves.py --x total_positions_conservative \
+  --out results/curves_conservative.png
+```
+
+The two plots hold the same data on two x axes: SPEC 6.2 counts a joint step
+once (`total_positions = joint_positions`) and conservatively twice
+(`total_positions_conservative = 2 x joint_positions`). A staged run has no
+conservative count, so on that plot it keeps its own `total_positions`.
+
+### 3A.4 G2 verdict under both accountings
+
+G2 (TASKS): the JEPA variant matches or beats the best Phase-1 variant at equal
+`total_positions`. Read it off both plots and keep both verdicts; a value within
+the Phase-1 `ppl_std` counts as a match.
+
+- **`curves.png` (x = `total_positions`).** Compare at equal x. The milestone
+grids differ: Phase 1 adds the 655.36M-token tokenizer budget and lands at
+0.79B / 0.98B / 1.31B / 1.97B, JEPA at 0.13B / 0.33B / 0.66B / 1.31B. Compare
+each JEPA milestone with the Phase-1 curve at the same x (interpolate between
+the two surrounding Phase-1 milestones when needed); the headline point is
+JEPA 100% (1.31B) against the Phase-1 50% milestone (1.31B). Pass if JEPA Gen
+PPL is `<=` the Phase-1 value at every compared x.
+- **`curves_conservative.png` (x = `total_positions_conservative`).** The same
+read at double x. Only the JEPA 10/25/50% points (0.26B / 0.65B / 1.31B) have
+Phase-1 counterparts below 1.97B; the JEPA 100% point (2.62B) is past every
+Phase-1 run, so report it and exclude it from pass/fail. Pass under the same
+`<=` rule.
+- The best Phase-1 variant is whichever of `gen_noisy_flow_dev` /
+`gen_noisy_regress_dev` has the lower Gen PPL at the compared position; name it.
+- A JEPA run that trips the collapse alarm or has `pairwise_agree` near 1 fails
+regardless of Gen PPL.
+
+### 3A.5 Paste back (JEPA diagnostics and eval)
+
+```bash
+cd ~/jncm
+python - <<'PY'
+import glob, json, os
+
+for run in ("jepa_base_dev",):
+    print(f"== {run}")
+    rows = [json.loads(line) for line in open(f"results/{run}/metrics.jsonl") if line.strip()]
+    last = rows[-1]
+    print(f"step {last['step']} loss {last['train_loss']:.4f} dec {last['loss_dec']:.4f} "
+          f"pred {last['loss_pred']:.4f} vic {last['loss_vic']:.4f} "
+          f"joint_positions {last['joint_positions']} "
+          f"conservative {last['total_positions_conservative']}")
+    for k in range(len(last["std_min"])):
+        print(f"  L{k + 1:02d} std {last['std_min'][k]:.3f}/{last['std_mean'][k]:.3f} "
+              f"target_std {last['target_std_min'][k]:.3f}/{last['target_std_mean'][k]:.3f} "
+              f"eff_rank {last['eff_rank'][k]:.2f} "
+              f"target_eff_rank {last['target_eff_rank'][k]:.2f} "
+              f"R2 {last['r2'][k]:.3f}")
+    print(f"  collapse_alarm {last['collapse_alarm']} steps {last['collapse_steps']}")
+    for path in sorted(glob.glob(f"results/{run}/eval/step_*.json")):
+        if ".seed_" in os.path.basename(path):
+            continue
+        rec = json.load(open(path))
+        print(f"  step {rec['step']} total_positions {rec['total_positions']} "
+              f"conservative {rec['total_positions_conservative']} "
+              f"ppl {rec['ppl_mean']:.2f} ppl/10.80 {rec['ppl_mean'] / 10.80:.3f} "
+              f"h_gpt2 {rec['h_gpt2_mean']:.2f} h_dataset {rec['h_dataset_mean']:.2f} "
+              f"unique_frac {rec['unique_frac_mean']:.3f} "
+              f"pairwise_agree {rec['pairwise_agree_mean']:.3f}")
+PY
+```
+
+Paste per-level `std` (c_k and t_k), both effective ranks, `R2`, the collapse
+alarm with its consecutive-step counts, Gen PPL ratio to the 10.80 data row
+(`ppl_mean / 10.80`), and `pairwise_agree` for every arm.
+
 ## 4. Paste back (metrics tails for review)
 
 Run on a login node in `~/jncm`; these read JSON/JSONL only (no torch, no GPU).
@@ -252,7 +423,7 @@ Each block prints well under 30 lines.
 
 ```bash
 cd ~/jncm
-squeue -u "$USER" -n "jncm_tok,jncm_gen,jncm_eval" -o "%.8i %.12j %.8T %.10M %.12l"
+squeue -u "$USER" -n "jncm_tok,jncm_gen,jncm_eval,jncm_jepa" -o "%.8i %.12j %.8T %.10M %.12l"
 sacct -j 2880034,2880035 --format=JobID%12,JobName%12,State,Elapsed,Timelimit,ExitCode
 ```
 

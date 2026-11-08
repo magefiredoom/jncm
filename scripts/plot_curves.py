@@ -7,8 +7,16 @@ Reads the aggregate files written by ``scripts/run_eval.py``:
 as an offset (SPEC 6.2). Per-seed shards (``step_<n>.seed_<i>.json``) are
 ignored, so a merge in progress does not add half-aggregated points.
 
+The JEPA joint runs record ``total_positions = joint_positions`` and
+``total_positions_conservative = 2 * joint_positions`` (SPEC 6.2). ``--x``
+selects which one is the x axis; with ``total_positions_conservative`` a staged
+record (which has no joint count) falls back to its own ``total_positions``, so
+both curves stay on one axis. Plot JEPA results once under each accounting.
+
 Usage:
     python scripts/plot_curves.py --results results --out results/curves.png
+    python scripts/plot_curves.py --x total_positions_conservative \\
+        --out results/curves_conservative.png
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 AGGREGATE_RE = re.compile(r"^step_\d{6}\.json$")
+X_KEYS = ("total_positions", "total_positions_conservative")
 
 
 def total_positions(record: dict[str, Any]) -> int:
@@ -38,7 +47,25 @@ def total_positions(record: dict[str, Any]) -> int:
     return int(record["gen_positions"]) + int(record.get("tok_positions", 0))
 
 
-def collect_points(results_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
+def x_position(record: dict[str, Any], x_key: str = "total_positions") -> int:
+    """x coordinate for one record under the selected position accounting.
+
+    ``total_positions_conservative`` exists only on joint (JEPA) records; a
+    staged record has no joint count, so it keeps its own ``total_positions``
+    (SPEC 6.2).
+    """
+    if x_key not in X_KEYS:
+        raise ValueError(f"x_key must be one of {X_KEYS}, got {x_key!r}")
+    if x_key == "total_positions_conservative":
+        value = record.get("total_positions_conservative")
+        if value is not None:
+            return int(value)
+    return total_positions(record)
+
+
+def collect_points(
+    results_dir: str | Path, x_key: str = "total_positions"
+) -> dict[str, list[dict[str, Any]]]:
     """Load every aggregate eval record, grouped by run and sorted by positions."""
     root = Path(results_dir)
     points: dict[str, list[dict[str, Any]]] = {}
@@ -48,7 +75,7 @@ def collect_points(results_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
         record = json.loads(path.read_text(encoding="utf-8"))
         run_id = str(record.get("run_id") or path.parent.parent.name)
         point = dict(record)
-        point["x"] = total_positions(record)
+        point["x"] = x_position(record, x_key)
         point["run_id"] = run_id
         points.setdefault(run_id, []).append(point)
     if not points:
@@ -76,9 +103,10 @@ def _series(
 def plot_curves(
     results_dir: str | Path = "results",
     out_path: str | Path = "results/curves.png",
+    x_key: str = "total_positions",
 ) -> Path:
     """Render the three panels and save a PNG; returns the output path."""
-    by_run = collect_points(results_dir)
+    by_run = collect_points(results_dir, x_key=x_key)
     fig, (ax_ppl, ax_entropy, ax_div) = plt.subplots(1, 3, figsize=(16.0, 4.5))
     colors = plt.get_cmap("tab10").colors
 
@@ -133,8 +161,13 @@ def plot_curves(
     ax_div.set_ylabel("fraction")
     ax_div.set_ylim(-0.02, 1.05)
 
+    xlabel = (
+        "total positions (conservative: 2 x joint positions)"
+        if x_key == "total_positions_conservative"
+        else "total positions (tokenizer budget + generator)"
+    )
     for ax in (ax_ppl, ax_entropy, ax_div):
-        ax.set_xlabel("total positions (tokenizer budget + generator)")
+        ax.set_xlabel(xlabel)
         ax.grid(alpha=0.3)
 
     fig.tight_layout()
@@ -151,13 +184,28 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--results", type=str, default="results")
     parser.add_argument("--out", type=str, default=None)
+    parser.add_argument(
+        "--x",
+        dest="x_key",
+        choices=list(X_KEYS),
+        default="total_positions",
+        help=(
+            "x axis: total_positions (default) or total_positions_conservative "
+            "(joint JEPA runs; staged runs fall back to total_positions)"
+        ),
+    )
     args = parser.parse_args(argv)
 
-    by_run = collect_points(args.results)
+    by_run = collect_points(args.results, x_key=args.x_key)
     for run_id, points in by_run.items():
         print(f"{run_id}: {len(points)} checkpoints")
-    out = Path(args.out) if args.out else Path(args.results) / "curves.png"
-    print(f"wrote {plot_curves(args.results, out)}")
+    default_name = (
+        "curves.png"
+        if args.x_key == "total_positions"
+        else "curves_conservative.png"
+    )
+    out = Path(args.out) if args.out else Path(args.results) / default_name
+    print(f"wrote {plot_curves(args.results, out, x_key=args.x_key)}")
 
 
 if __name__ == "__main__":
