@@ -135,9 +135,9 @@ def test_2x2_flag_combination_runs_50_steps(
         "target_eff_rank",
         "collapse_steps",
         "collapse_alarm",
-        "tok_positions",
-        "gen_positions",
+        "joint_positions",
         "total_positions",
+        "total_positions_conservative",
     ):
         assert key in last, key
     assert math.isfinite(last["train_loss"]) and last["train_loss"] > 0.0
@@ -145,6 +145,7 @@ def test_2x2_flag_combination_runs_50_steps(
     assert last["vicreg"] is vicreg
     assert last["ema"] is True
     assert last["head"] == "regress"
+    assert last["target_chain"] == "online"
     if vicreg:
         assert last["loss_vic"] >= 0.0
     else:
@@ -153,9 +154,10 @@ def test_2x2_flag_combination_runs_50_steps(
     assert len(last["collapse_steps"]) == cfg.tokenizer.K
 
     per_step = 50 * cfg.generator.train.batch_size * cfg.L
-    assert last["gen_positions"] == per_step
-    assert last["tok_positions"] == 1234 + per_step
-    assert last["total_positions"] == 1234 + 2 * per_step
+    assert last["joint_positions"] == per_step
+    assert last["total_positions"] == per_step
+    assert last["total_positions_conservative"] == 2 * per_step
+    assert "tok_positions" not in last and "gen_positions" not in last
     assert last["train_loss"] == pytest.approx(
         last["loss_dec"] + cfg.jepa.lambda_pred * last["loss_pred"] + last["loss_vic"],
         rel=1e-5,
@@ -166,9 +168,58 @@ def test_2x2_flag_combination_runs_50_steps(
     for key in ("tokenizer", "backbone", "head", "optimizer_state_dict", "config"):
         assert key in state, key
     assert state["step"] == 49
-    assert state["gen_positions"] == per_step
-    assert state["tok_positions"] == 1234 + per_step
+    assert state["joint_positions"] == per_step
+    assert state["total_positions_conservative"] == 2 * per_step
     assert (state["ema"] is not None) is cfg.jepa.ema
+
+
+def test_joint_position_accounting(tmp_path: Path) -> None:
+    """SPEC 6.2: joint steps are counted once, the conservative count twice."""
+    cfg = _cfg()
+    cfg.generator.train.eval_every = 1
+    cfg.generator.train.save_every = 100
+
+    run_dir, records = _run(tmp_path, cfg, steps=3)
+
+    per_step = cfg.generator.train.batch_size * cfg.L
+    assert [record["step"] for record in records] == [1, 2, 3]
+    assert [record["joint_positions"] for record in records] == [
+        per_step,
+        2 * per_step,
+        3 * per_step,
+    ]
+    for record in records:
+        assert record["total_positions"] == record["joint_positions"]
+        assert record["total_positions_conservative"] == 2 * record["joint_positions"]
+        assert "tok_positions" not in record
+        assert "gen_positions" not in record
+
+    state = torch.load(run_dir / "ckpt" / "latest.pt", map_location="cpu")
+    assert state["joint_positions"] == 3 * per_step
+    # The tokenizer budget is still recorded, but SPEC 6.2 does not charge it.
+    assert state["tok_offset"] == 1234
+
+
+@pytest.mark.parametrize("target_chain", ["online", "ema_clean"])
+def test_target_chain_runs_50_steps_with_flow(
+    tmp_path: Path, target_chain: str
+) -> None:
+    cfg = _cfg(head="flow")
+    cfg.jepa.target_chain = target_chain
+    cfg.generator.train.eval_every = 50
+    cfg.generator.train.save_every = 50
+
+    run_dir, records = _run(tmp_path, cfg, steps=50)
+
+    last = records[-1]
+    assert last["step"] == 50
+    assert last["head"] == "flow"
+    assert last["target_chain"] == target_chain
+    assert math.isfinite(last["train_loss"]) and last["train_loss"] > 0.0
+    assert math.isfinite(last["loss_pred"]) and last["loss_pred"] > 0.0
+    assert last["joint_positions"] == 50 * cfg.generator.train.batch_size * cfg.L
+    state = torch.load(run_dir / "ckpt" / "latest.pt", map_location="cpu")
+    assert any(key.startswith("nets.") for key in state["head"])
 
 
 # --------------------------------------------------------------------------- #
@@ -286,8 +337,8 @@ def test_resume_continues_step_and_positions(tmp_path: Path) -> None:
 
     last = records[-1]
     assert last["step"] == 4
-    assert last["gen_positions"] == 4 * cfg.generator.train.batch_size * cfg.L
-    assert last["tok_positions"] == 99 + 4 * cfg.generator.train.batch_size * cfg.L
+    assert last["joint_positions"] == 4 * cfg.generator.train.batch_size * cfg.L
+    assert last["total_positions"] == last["joint_positions"]
     state = torch.load(latest, map_location="cpu")
     assert state["step"] == 3
     assert state["tok_offset"] == 99
@@ -309,6 +360,11 @@ def test_validate_rejects_phase1_configs() -> None:
     negative.jepa.lambda_pred = -1.0
     with pytest.raises(ValueError):
         validate_jepa_config(negative)
+
+    chain = _cfg()
+    chain.jepa.target_chain = "noisy_clean"
+    with pytest.raises(ValueError):
+        validate_jepa_config(chain)
 
 
 def test_train_rejects_vq_before_touching_files(tmp_path: Path) -> None:

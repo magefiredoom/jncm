@@ -5,9 +5,12 @@ and the generator G (backbone + head) on the same batch:
 
 1. E encodes the batch: clean codes ``c_k``, chain codes ``c_k + sigma_k * eps``
    and ``zhat`` (SPEC 4.1/4.3).
-2. E-bar encodes the same batch with the channel noise off under ``no_grad``
-   (SPEC 8 step 2). When ``jepa.ema`` is false, E itself produces the targets,
-   under stop-gradient.
+2. Targets under ``no_grad`` (SPEC 8 step 2). ``jepa.target_chain = "online"``
+   (default) teacher-forces E-bar onto the online chain:
+   ``t_k = LayerNorm(Ebar.proj_k(down(zbar - zhat_{k-1}, l_k)))`` with the
+   online ``zhat_{k-1}`` detached, before corruption. ``"ema_clean"`` keeps
+   the v1.3 ``encode_clean`` chain (E-bar's own noise-free chain). When
+   ``jepa.ema`` is false, E itself produces the targets, under stop-gradient.
 3. G predicts level k from the corrupted online chain (SPEC 5.4), so the
    prediction loss reaches E through the conditioning (SPEC 8 step 3).
 4. ``L_pred`` weights each level's head loss against ``sg(t_k)`` with the SPEC
@@ -39,6 +42,7 @@ from jncm.levels import down
 from jncm.tokenizer.trunk import MultiscaleTokenizer, sample_cutoff
 
 JEPA_HEADS: tuple[str, ...] = ("regress", "flow")
+TARGET_CHAINS: tuple[str, ...] = ("online", "ema_clean")
 
 
 def encode_clean(
@@ -79,6 +83,49 @@ def encode_clean(
         targets.append(clean)
         zhat.append(zhat[-1] + tokenizer.contrib(k, clean))
     return targets, zhat
+
+
+def encode_online_targets(
+    target_tokenizer: MultiscaleTokenizer,
+    x: torch.Tensor,
+    zhat: Sequence[torch.Tensor],
+) -> list[torch.Tensor]:
+    """SPEC 8 step 2 default chain: E-bar's embedding, online partial chain.
+
+    ``t_k = LayerNorm(Ebar.proj_k(down(zbar - zhat_{k-1}, l_k)))`` with
+    ``zbar = Ebar.encode_trunk(x)`` and the online partial reconstruction
+    ``zhat_{k-1}`` (detached, before corruption). The targets then live in the
+    chain the decoder is trained on, so finer levels correct the coarse channel
+    noise.
+
+    Args:
+        target_tokenizer: E-bar (EMA copy), or the online encoder when
+            ``jepa.ema`` is false.
+        x: Token ids [B, L].
+        zhat: Online chain reconstructions, K+1 tensors [B, L, d], zhat[0] = 0.
+
+    Returns:
+        One target [B, l_k, d_k] per level.
+    """
+    if target_tokenizer.quantizer_type != "noisy":
+        raise ValueError(
+            "JEPA joint mode requires the noisy quantizer (SPEC 8), got "
+            f"quantizer={target_tokenizer.quantizer_type!r}"
+        )
+    if x.dim() != 2:
+        raise ValueError(f"x must be [B, L] token ids, got {tuple(x.shape)}")
+    expected = target_tokenizer.K + 1
+    if len(zhat) != expected:
+        raise ValueError(f"expected {expected} zhat tensors, got {len(zhat)}")
+
+    zbar = target_tokenizer.encode_trunk(x)
+    targets: list[torch.Tensor] = []
+    for k in range(1, target_tokenizer.K + 1):
+        residual = zbar - zhat[k - 1]
+        u = down(residual, target_tokenizer.schedule[k - 1])
+        quantizer = target_tokenizer.quantizers[k - 1]
+        targets.append(quantizer.norm(quantizer.proj(u)))
+    return targets
 
 
 def integrate_flow(
@@ -188,6 +235,8 @@ def joint_loss(
         x: Token ids [B, L].
         target_tokenizer: EMA copy E-bar, or None to take the targets from the
             online encoder under stop-gradient (``jepa.ema = false``).
+            ``jepa.target_chain`` selects the online (default) or ``ema_clean``
+            target chain.
         generator: Single RNG for all draws; a seed reproduces the step.
 
     Returns:
@@ -208,10 +257,22 @@ def joint_loss(
     # 1. Online encode: clean codes c_k, chain codes with channel noise, zhat.
     enc = tokenizer.encode(x, generator=generator)
 
-    # 2. Targets: E-bar with the channel noise off, under no_grad (SPEC 8).
+    # 2. Targets (SPEC 8 step 2): ``online`` teacher-forces E-bar onto the
+    #    online chain (detached, before corruption); ``ema_clean`` uses E-bar's
+    #    own noise-free chain (the v1.3 definition).
     source = tokenizer if target_tokenizer is None else target_tokenizer
     with torch.no_grad():
-        targets, _ = encode_clean(source, x)
+        if cfg.jepa.target_chain == "online":
+            targets = encode_online_targets(
+                source, x, [z.detach() for z in enc.zhat]
+            )
+        elif cfg.jepa.target_chain == "ema_clean":
+            targets, _ = encode_clean(source, x)
+        else:
+            raise ValueError(
+                f"jepa.target_chain must be one of {TARGET_CHAINS}, got "
+                f"{cfg.jepa.target_chain!r}"
+            )
     targets = [target.detach() for target in targets]
 
     # 3. Corrupt the online chain once, then predict all levels packed.

@@ -81,6 +81,7 @@ class JEPAConfig:
     vicreg: bool = True
     decoder_through_E: bool = True
     ema: bool = True
+    target_chain: str = "online"  # "online" | "ema_clean"
     lambda_var: float = 1.0
     lambda_cov: float = 0.04
     lambda_pred: float = 1.0

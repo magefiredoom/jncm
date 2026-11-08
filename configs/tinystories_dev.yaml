@@ -59,6 +59,7 @@ jepa:
   vicreg: true
   decoder_through_E: true
   ema: true
+  target_chain: "online"
   lambda_var: 1.0
   lambda_cov: 0.04
   lambda_pred: 1.0

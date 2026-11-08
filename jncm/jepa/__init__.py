@@ -12,8 +12,10 @@ from jncm.jepa.diagnostics import (
 from jncm.jepa.ema import EMAModule, cosine_momentum
 from jncm.jepa.joint import (
     JEPA_HEADS,
+    TARGET_CHAINS,
     JointStep,
     encode_clean,
+    encode_online_targets,
     integrate_flow,
     joint_loss,
     predicted_codes,
@@ -24,6 +26,7 @@ __all__ = [
     "COLLAPSE_PATIENCE",
     "COLLAPSE_STD",
     "JEPA_HEADS",
+    "TARGET_CHAINS",
     "CollapseAlarm",
     "EMAModule",
     "JointStep",
@@ -32,6 +35,7 @@ __all__ = [
     "covariance_term",
     "effective_rank",
     "encode_clean",
+    "encode_online_targets",
     "explained_variance",
     "integrate_flow",
     "joint_loss",

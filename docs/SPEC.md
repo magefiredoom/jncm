@@ -1,4 +1,4 @@
-# SPEC — jncm (v1.3, 2026-11-06)
+# SPEC — jncm (v1.4, 2026-11-08)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
 
@@ -7,6 +7,8 @@ Source of truth for all implementation work. Items tagged **[DECISION]** are des
 **v1.2 change:** level-schedule ties round half up, defined with exact integer arithmetic (2).
 
 **v1.3 changes:** diversity metrics `unique_frac` and `pairwise_agree` added to evaluation (6.1); the `regress` head's collapse at level 1 is documented as expected behavior of the ablation (5.3).
+
+**v1.4 changes:** JEPA targets are teacher-forced on the online chain by default (8, step 2) with the old definition kept as `target_chain: ema_clean`; joint-run position accounting defined (6.2).
 
 ## 1. Purpose and scope
 
@@ -196,7 +198,7 @@ AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, 
 
 ### 6.2 Token accounting (for the sample-efficiency claim)
 
-Every metrics record carries `tok_positions` (tokenizer steps x batch x L), `gen_positions` (generator steps x batch x L) and `total_positions` (sum). For comparisons, curves are plotted against `total_positions`, with the tokenizer budget added as an offset for generator curves. Both discrete and continuous runs use identical accounting.
+Every metrics record carries `tok_positions` (tokenizer steps x batch x L), `gen_positions` (generator steps x batch x L) and `total_positions` (sum). For comparisons, curves are plotted against `total_positions`, with the tokenizer budget added as an offset for generator curves. Both discrete and continuous runs use identical accounting. Joint (JEPA) runs train tokenizer and generator in one loop, so each sample is seen once by both objectives: record `joint_positions` = steps x B x L, `total_positions = joint_positions`, and `total_positions_conservative = 2 x joint_positions` (the count comparable to staged runs if both objectives are charged); plot both.
 
 ### 6.3 Samples
 
@@ -217,7 +219,7 @@ Requires `quantizer: noisy`. Modules: online encoder E (the tokenizer encode pat
 Per training step on batch x:
 
 1. Online encode: clean codes c_k, chain codes, `zhat`.
-2. EMA encode under no_grad with noise off: targets t_k, computed with E-bar's own residual chain; shape [B,l_k,d_k].
+2. EMA targets, teacher-forced on the online chain (default, `jepa.target_chain: online`). Under no_grad, with E-bar's embedding `zbar = Ebar-embed(x)` and the online noisy partial reconstructions `zhat_{k-1}` (detached, before corruption): `t_k = LayerNorm(Ebar.proj_k(down(zbar - zhat_{k-1}, l_k)))`, shape [B,l_k,d_k]. Targets then live in the same chain the decoder is trained on, where finer levels correct the channel noise of coarser ones. This is exactly the Phase-1 target definition with E-bar's parameters. Property test: with E-bar equal to the online parameters, these targets equal the staged `enc.targets` for the same noise draw. The ablation `ema_clean` uses E-bar's own noise-free chain (the v1.3 definition): its targets cannot correct channel noise, so expect uncorrected noise in sampled chains. Sampling from a JEPA-trained model uses the Phase-1 sampler and channel-noise rule (5.3).
 3. Corrupt the online chain codes (5.4); G predicts level k from `zhat~_{k-1}` (online; gradient reaches E through the conditioning).
 4. `L_pred = sum_k w_k * dist(c-hat_k, sg(t_k))`. For `regress`: MSE (or cosine). For `flow`: the flow-matching target is t_k.
 5. `L_dec = CE(D(zhat[cut]), x)` with nested dropout. Flag `decoder_through_E` (default true; false feeds `zhat[cut].detach()`).
@@ -225,7 +227,7 @@ Per training step on batch x:
 7. `L = L_dec + lambda_pred * L_pred + L_vic`, lambda_pred = 1.
 8. After the optimizer step: `theta_bar <- m * theta_bar + (1 - m) * theta`, m cosine-scheduled from 0.996 to 1.0.
 
-Ablation flags (all configurable): `ema` (false: targets come from the online encoder under stop-gradient), `vicreg`, `decoder_through_E`, `head` (`regress` | `flow`). The planned 2x2 is `decoder_through_E` x `vicreg`.
+Ablation flags (all configurable): `ema` (false: targets come from the online encoder under stop-gradient), `vicreg`, `decoder_through_E`, `head` (`regress` | `flow`; the generator's `ce` head is rejected in JEPA mode), `target_chain` (`online` default | `ema_clean`). The planned 2x2 is `decoder_through_E` x `vicreg`.
 
 Diagnostics (log per level): min and mean std of c_k and t_k; effective rank; explained variance `R2_k = 1 - MSE_k / Var(t_k)`; collapse alarm if mean std < 0.1 for 200 consecutive steps.
 

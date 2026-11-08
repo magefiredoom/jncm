@@ -10,13 +10,17 @@ ablation flags live in the config and are all consumed here or in
 - ``jepa.vicreg``: add the per-level VICReg terms on ``c_k`` and ``c-hat_k``.
 - ``jepa.decoder_through_E``: let ``L_dec`` backpropagate into E (false detaches
   the decoder input).
+- ``jepa.target_chain``: ``online`` (default) teacher-forces E-bar on the online
+  chain; ``ema_clean`` uses E-bar's own noise-free chain (the v1.3 definition).
 - ``generator.head``: ``regress`` or ``flow`` (``ce`` and ``vq`` are Phase 1).
 
 Periodic diagnostics log, per level, the min/mean std of ``c_k`` and ``t_k``,
 both effective ranks, the explained variance ``R2_k = 1 - MSE_k / Var(t_k)``,
 and a collapse alarm that fires after 200 consecutive steps with mean std < 0.1
-(SPEC 8). Every record also carries the SPEC 6.2 position accounting; a joint
-step is both a tokenizer and a generator step, so both counters grow by B*L.
+(SPEC 8). Every record carries the SPEC 6.2 joint accounting: ``joint_positions``
+= steps * B * L, ``total_positions = joint_positions`` and
+``total_positions_conservative = 2 * joint_positions`` (the count comparable to
+a staged run when both objectives are charged).
 """
 
 from __future__ import annotations
@@ -33,7 +37,9 @@ from jncm.config import Config, load_config, save_config
 from jncm.data import InfiniteBatchIterator
 from jncm.jepa.diagnostics import CollapseAlarm, code_diagnostics
 from jncm.jepa.ema import EMAModule
-from jncm.jepa.joint import JEPA_HEADS, JointStep, joint_loss, predicted_codes
+from jncm.jepa.joint import (
+    JEPA_HEADS, TARGET_CHAINS, JointStep, joint_loss, predicted_codes,
+)
 from jncm.train_generator import (
     build_generator,
     build_optimizer,
@@ -65,6 +71,11 @@ def validate_jepa_config(cfg: Config) -> None:
             f"JEPA joint mode needs head in {JEPA_HEADS}, got "
             f"{cfg.generator.head!r}"
         )
+    if cfg.jepa.target_chain not in TARGET_CHAINS:
+        raise ValueError(
+            f"jepa.target_chain must be one of {TARGET_CHAINS}, got "
+            f"{cfg.jepa.target_chain!r}"
+        )
     for name in ("lambda_pred", "lambda_var", "lambda_cov", "gamma"):
         value = getattr(cfg.jepa, name)
         if float(value) < 0.0:
@@ -95,7 +106,8 @@ def load_online_tokenizer(
 
     Returns:
         ``(tokenizer, tok_positions)``; ``tok_positions`` is the tokenizer
-        budget recorded in the checkpoint (the SPEC 6.2 offset).
+        budget recorded in the checkpoint (kept as bookkeeping; SPEC 6.2 does
+        not charge it to a joint run).
     """
     tokenizer, tok_positions = load_tokenizer(ckpt_path, cfg)
     for parameter in tokenizer.parameters():
@@ -111,8 +123,7 @@ def run_diagnostics(
     step: int,
     train_loss: float,
     current_lr: float,
-    tok_positions: int,
-    gen_positions: int,
+    joint_positions: int,
     data_source: str,
     alarm: CollapseAlarm,
     momentum: float | None = None,
@@ -146,11 +157,12 @@ def run_diagnostics(
         "cut": int(joint.cut),
         "head": cfg.generator.head,
         "ema": bool(cfg.jepa.ema),
+        "target_chain": cfg.jepa.target_chain,
         "vicreg": bool(cfg.jepa.vicreg),
         "decoder_through_E": bool(cfg.jepa.decoder_through_E),
-        "tok_positions": int(tok_positions),
-        "gen_positions": int(gen_positions),
-        "total_positions": int(tok_positions + gen_positions),
+        "joint_positions": int(joint_positions),
+        "total_positions": int(joint_positions),
+        "total_positions_conservative": int(2 * joint_positions),
         "collapse_steps": list(alarm.counts),
         "collapse_alarm": bool(any(alarmed)),
     }
@@ -296,8 +308,7 @@ def train(
 
         momentum = target_encoder.update(tokenizer, step) if target_encoder else None
 
-        gen_positions = (step + 1) * gen_train.batch_size * cfg.L
-        tok_positions = tok_offset + gen_positions
+        joint_positions = (step + 1) * gen_train.batch_size * cfg.L
 
         is_last = step + 1 == gen_train.max_steps
         if (step + 1) % gen_train.eval_every == 0 or is_last or step == 0:
@@ -311,8 +322,7 @@ def train(
                 step=step + 1,
                 train_loss=float(joint.loss.detach()),
                 current_lr=curr_lr,
-                tok_positions=tok_positions,
-                gen_positions=gen_positions,
+                joint_positions=joint_positions,
                 data_source=data_source,
                 alarm=alarm,
                 momentum=momentum,
@@ -324,7 +334,7 @@ def train(
                 f"Step {step + 1:5d} | Loss: {metrics['train_loss']:.4f} | "
                 f"dec {metrics['loss_dec']:.4f} | pred {metrics['loss_pred']:.4f} | "
                 f"vic {metrics['loss_vic']:.4f} | R2 {mean_r2:.3f} | "
-                f"tok_pos: {tok_positions} | gen_pos: {gen_positions}"
+                f"joint_pos: {joint_positions}"
             )
 
         if (step + 1) % gen_train.save_every == 0 or is_last:
@@ -338,8 +348,9 @@ def train(
                 "collapse_alarm": alarm.state_dict(),
                 "config": asdict(cfg),
                 "tok_offset": tok_offset,
-                "tok_positions": tok_positions,
-                "gen_positions": gen_positions,
+                "joint_positions": joint_positions,
+                "total_positions": joint_positions,
+                "total_positions_conservative": 2 * joint_positions,
             }
             torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
             torch.save(state, ckpt_dir / "latest.pt")

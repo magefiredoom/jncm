@@ -93,8 +93,9 @@ def test_encode_clean_rejects_vq() -> None:
         encode_clean(tokenizer, _batch(cfg))
 
 
-def test_joint_targets_are_noise_free_and_detached() -> None:
+def test_ema_clean_targets_are_noise_free_and_detached() -> None:
     cfg = _cfg()
+    cfg.jepa.target_chain = "ema_clean"
     tokenizer, backbone, head = _build(cfg)
     x = _batch(cfg)
 
@@ -136,7 +137,14 @@ def test_joint_targets_are_noise_free_and_detached() -> None:
     for before_target, after_target in zip(step.targets, after.targets):
         assert torch.equal(before_target, after_target)
 
-    # ema=False: the online encoder produces the same targets, stop-grad.
+
+
+def test_targets_are_detached_without_ema() -> None:
+    cfg = _cfg()
+    cfg.jepa.target_chain = "ema_clean"
+    tokenizer, backbone, head = _build(cfg)
+    x = _batch(cfg)
+
     step_online = joint_loss(
         cfg,
         tokenizer,
@@ -150,6 +158,73 @@ def test_joint_targets_are_noise_free_and_detached() -> None:
     for target, want in zip(step_online.targets, expected_online):
         assert torch.equal(target, want)
         assert target.requires_grad is False
+
+
+def test_online_targets_equal_staged_targets_for_the_same_noise_draw() -> None:
+    """SPEC 8 step 2 property: E-bar == E recovers the Phase-1 staged targets."""
+    cfg = _cfg()
+    cfg.jepa.target_chain = "online"
+    tokenizer, backbone, head = _build(cfg)
+    x = _batch(cfg)
+    ema = EMAModule(tokenizer, total_steps=100)  # exact parameter copy at init
+
+    staged = tokenizer.encode(x, generator=torch.Generator().manual_seed(11))
+    step = joint_loss(
+        cfg,
+        tokenizer,
+        backbone,
+        head,
+        x,
+        target_tokenizer=ema.module,
+        generator=torch.Generator().manual_seed(11),
+    )
+
+    assert len(step.targets) == tokenizer.K
+    for level, (target, want) in enumerate(zip(step.targets, staged.targets), start=1):
+        assert target.shape == want.shape, f"level {level}"
+        assert torch.equal(target, want), f"level {level}: online target != enc.targets"
+        assert target.requires_grad is False
+        assert target.grad_fn is None
+
+
+def test_online_targets_use_the_online_chain_ema_clean_does_not() -> None:
+    cfg = _cfg()
+    tokenizer, backbone, head = _build(cfg)
+    x = _batch(cfg)
+    ema = EMAModule(tokenizer, total_steps=100)
+
+    def targets(chain: str, seed: int = 0) -> list[torch.Tensor]:
+        cfg.jepa.target_chain = chain
+        return joint_loss(
+            cfg,
+            tokenizer,
+            backbone,
+            head,
+            x,
+            target_tokenizer=ema.module,
+            generator=torch.Generator().manual_seed(seed),
+        ).targets
+
+    online_before = targets("online")
+    clean_before = targets("ema_clean")
+    # Level 1 has zhat_0 = 0 on both chains, so only finer levels can differ.
+    assert torch.equal(online_before[0], clean_before[0])
+    assert any(
+        not torch.allclose(a, b)
+        for a, b in zip(online_before[1:], clean_before[1:])
+    )
+
+    # More online channel noise moves the online targets (zhat is in the chain)
+    # but never the ema_clean ones (E-bar's own noise-free chain).
+    for quantizer in tokenizer.quantizers:
+        quantizer.sigma_k = 2.0
+    online_after = targets("online")
+    clean_after = targets("ema_clean")
+    assert any(
+        not torch.allclose(a, b) for a, b in zip(online_before, online_after)
+    )
+    for before, after in zip(clean_before, clean_after):
+        assert torch.equal(before, after)
 
 
 # --------------------------------------------------------------------------- #
