@@ -232,6 +232,35 @@ def test_g2_fails_when_jepa_is_worse(tmp_path: Path, capsys) -> None:
     assert exit_code == 1
 
 
+def test_dense_ten_point_curves_get_one_row_per_milestone(
+    tmp_path: Path, capsys
+) -> None:
+    """T5.5b F14: the 10% milestone grid keeps every point in the report."""
+    points = [
+        {
+            "step": 100 * index,
+            "fraction": round(0.1 * index, 1),
+            "total_positions": 100 * index,
+            "ppl": 10.0 + index,
+        }
+        for index in range(1, 11)
+    ]
+    _write_run(tmp_path, "gen_vq_ce_dev", points)
+    _write_run(tmp_path, "gen_noisy_flow_dev", points)
+    _write_run(tmp_path, "gen_noisy_regress_dev", points)
+    _write_run(tmp_path, "jepa_run", points)
+
+    exit_code = main(_args(tmp_path))
+
+    out = capsys.readouterr().out
+    for index in range(1, 11):
+        assert f"{index * 10}%" in out
+    assert "G0: PASS" in out
+    assert "G1 (gen_noisy_flow_dev): PASS (10 compared milestones)" in out
+    assert "G2 (accounting: total_positions): PASS (10 compared)" in out
+    assert exit_code == 0
+
+
 def test_missing_runs_are_reported_not_silently_passed(
     tmp_path: Path, capsys
 ) -> None:

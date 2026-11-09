@@ -550,8 +550,15 @@ def train(
                 "tok_positions": tok_positions,
             }
             if milestone is not None:
+                # T5.5b F14: milestone files carry no Adam state (about 3x
+                # smaller); resume always uses latest.pt, which keeps it.
+                milestone_state = {
+                    key: value
+                    for key, value in state.items()
+                    if key != "optimizer_state_dict"
+                }
                 torch.save(
-                    {**state, "milestone": milestone},
+                    {**milestone_state, "milestone": milestone},
                     ckpt_dir / f"milestone_{round(milestone * 100):03d}.pt",
                 )
             if is_periodic:

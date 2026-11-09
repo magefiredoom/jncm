@@ -42,6 +42,17 @@ def test_config_tinystories_dev_yaml_loads() -> None:
     assert cfg.generator.H == 768
 
 
+def test_dev_configs_have_dense_milestones() -> None:
+    """T5.5b F14: every 10% of the budget, for both dev configurations."""
+    expected = [round(0.1 * index, 1) for index in range(1, 11)]
+    for path in (
+        Path("configs/tinystories_dev.yaml"),
+        Path("configs/jepa_dev.yaml"),
+    ):
+        cfg = load_config(path)
+        assert cfg.generator.train.milestones == expected, path
+
+
 def test_config_yaml_round_trip(tmp_path: Path) -> None:
     cfg_orig = load_config(Path("configs/smoke.yaml"))
     yaml_text = dump_config(cfg_orig)

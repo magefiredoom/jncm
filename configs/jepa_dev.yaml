@@ -66,7 +66,8 @@ generator:
     eval_every: 500
     save_every: 5000
     save_milestones: true
-    milestones: [0.10, 0.25, 0.50, 1.0]
+    # T5.5b F14: every 10% of the budget keeps the G2 comparison dense.
+    milestones: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 jepa:
   enabled: true

@@ -337,6 +337,10 @@ def test_trainer_saves_milestone_checkpoints_behind_the_flag(tmp_path: Path) -> 
     assert state["milestone"] == pytest.approx(0.5)
     assert state["step"] + 1 == 10
     assert state["gen_positions"] == 10 * cfg.generator.train.batch_size * cfg.L
+    # T5.5b F14: milestone files carry no Adam state; latest.pt still does.
+    assert "optimizer_state_dict" not in state
+    latest = torch.load(ckpt_dir / "latest.pt", map_location="cpu")
+    assert "optimizer_state_dict" in latest
 
     cfg.generator.train.save_milestones = False
     run_dir_off = train(

@@ -424,8 +424,12 @@ def test_milestones_are_saved_behind_the_flag(tmp_path: Path) -> None:
     assert state["step"] + 1 == 5
     assert state["joint_positions"] == 5 * cfg.generator.train.batch_size * cfg.L
     assert state["total_positions_conservative"] == 2 * state["joint_positions"]
-    for key in ("tokenizer", "backbone", "head", "ema", "optimizer_state_dict"):
+    for key in ("tokenizer", "backbone", "head", "ema"):
         assert key in state, key
+    # T5.5b F14: milestone files carry no Adam state; latest.pt still does.
+    assert "optimizer_state_dict" not in state
+    latest = torch.load(ckpt_dir / "latest.pt", map_location="cpu")
+    assert "optimizer_state_dict" in latest
 
     cfg.generator.train.save_milestones = False
     run_off = train(
