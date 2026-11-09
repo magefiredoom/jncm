@@ -3,6 +3,7 @@
 #
 #   scripts/launch_phase.sh <g0|g1|g2> <pilot|full> [--submit]
 #       [--wall HH:MM:SS] [--sec_per_step X] [--ablations]
+#       [--config PATH]
 #
 # Dry-run by default (prints every sbatch command, submits nothing).
 #
@@ -14,6 +15,10 @@
 #   g2: JEPA base (jepa_base_dev) per RUNBOOK 3A, started from the noisy
 #       tokenizer. The six ablations are listed; they are submitted only with
 #       --ablations (seven arms in total, base included).
+#
+# --config selects the YAML passed to every template through CONFIG (default:
+#   each template's dev config). The lite configs are
+#   configs/tinystories_lite.yaml (g0/g1) and configs/jepa_lite.yaml (g2).
 #
 # pilot: run ids pilot_*, 500 tokenizer / 300 generator / 200 JEPA steps,
 #   --time 00:20:00, GEN_PPL=1 on the generators (decoded samples plus Gen PPL
@@ -43,6 +48,7 @@ WALL="03:00:00"
 WALL_GIVEN=0
 CLI_SEC=""
 ABLATIONS=0
+CONFIG=""
 POSITIONAL=()
 
 PILOT_TOK_STEPS=500
@@ -77,6 +83,7 @@ JEPA_SETS=(
 usage() {
   echo "usage: scripts/launch_phase.sh <g0|g1|g2> <pilot|full> [--submit]" >&2
   echo "       [--wall HH:MM:SS] [--sec_per_step X] [--ablations]" >&2
+  echo "       [--config PATH]" >&2
 }
 
 die() {
@@ -92,6 +99,12 @@ while [[ $# -gt 0 ]]; do
       WALL_GIVEN=1
       ;;
     --sec_per_step=*) CLI_SEC="${1#--sec_per_step=}" ;;
+    --config=*) CONFIG="${1#--config=}" ;;
+    --config)
+      [[ $# -ge 2 ]] || die "--config needs a path"
+      CONFIG="$2"
+      shift
+      ;;
     --ablations) ABLATIONS=1 ;;
     -h | --help)
       usage
@@ -214,8 +227,11 @@ launch_tok() {
     return 0
   fi
   compute_chunks "$run" "$steps"
-  start_chain scripts/slurm/tok.sbatch "$CHUNKS" \
-    "ALL,QUANT=${quant},STEPS=${steps},RUN_ID=${run}" ""
+  export_spec="ALL,QUANT=${quant},STEPS=${steps},RUN_ID=${run}"
+  if [[ -n "$CONFIG" ]]; then
+    export_spec+=",CONFIG=${CONFIG}"
+  fi
+  start_chain scripts/slurm/tok.sbatch "$CHUNKS" "$export_spec" ""
 }
 
 launch_gen() {
@@ -224,6 +240,9 @@ launch_gen() {
   LAUNCHED=0
   export_spec="ALL,HEAD=${head},STEPS=${steps},RUN_ID=${run}"
   export_spec+=",TOKENIZER=results/${TOK_RUN}/ckpt/latest.pt"
+  if [[ -n "$CONFIG" ]]; then
+    export_spec+=",CONFIG=${CONFIG}"
+  fi
   if [[ "$MODE" == "pilot" ]]; then
     export_spec+=",GEN_PPL=1"
   fi
@@ -238,6 +257,9 @@ launch_eval() {
   export_spec="ALL,RUN_ID=${run}"
   if [[ -n "$tokenizer" ]]; then
     export_spec+=",TOKENIZER=${tokenizer}"
+  fi
+  if [[ -n "$CONFIG" ]]; then
+    export_spec+=",CONFIG=${CONFIG}"
   fi
   if [[ "$MODE" == "pilot" ]]; then
     export_spec+=",N_SAMPLES=${PILOT_N_SAMPLES},N_SEEDS=${PILOT_N_SEEDS}"
@@ -345,8 +367,11 @@ run_g2() {
       echo "  SETS=\"${sets}\""
     fi
     compute_chunks "$full_run" "$steps"
-    start_chain scripts/slurm/jepa.sbatch "$CHUNKS" \
-      "ALL,RUN_ID=${run},STEPS=${steps},TOKENIZER=results/${TOK_RUN}/ckpt/latest.pt" ""
+    export_spec="ALL,RUN_ID=${run},STEPS=${steps},TOKENIZER=results/${TOK_RUN}/ckpt/latest.pt"
+    if [[ -n "$CONFIG" ]]; then
+      export_spec+=",CONFIG=${CONFIG}"
+    fi
+    start_chain scripts/slurm/jepa.sbatch "$CHUNKS" "$export_spec" ""
     unset SETS
     dep=""
     if ((LAUNCHED)); then
@@ -356,7 +381,7 @@ run_g2() {
   done
 }
 
-echo "launch_phase ${PHASE} ${MODE}: wall ${WALL}, account ${SBATCH_ACCOUNT}, $([[ -n "$SUBMIT" ]] && echo submit || echo "dry-run (pass --submit)")"
+echo "launch_phase ${PHASE} ${MODE}: wall ${WALL}, config ${CONFIG:-template default}, account ${SBATCH_ACCOUNT}, $([[ -n "$SUBMIT" ]] && echo submit || echo "dry-run (pass --submit)")"
 case "$PHASE" in
   g0) run_g0 ;;
   g1) run_g1 ;;

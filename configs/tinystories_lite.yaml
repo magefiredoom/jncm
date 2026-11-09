@@ -1,0 +1,92 @@
+# Phase-1 lite run (T5.5b): same data, tokenizer and budgets as
+# configs/tinystories_dev.yaml, with a smaller generator (H 512, 8 layers,
+# 8 heads) and batch 256. Everything else is identical to the dev config.
+L: 128
+V: 8192
+seed: 42
+device: "cuda"
+compile: false
+
+tokenizer:
+  d: 384
+  K: 12
+  quantizer: "vq"
+  V_k: 4096
+  d_code: 64
+  d_k: 8
+  sigma_k: 0.4
+  beta: 0.25
+  ema_decay: 0.99
+  dead_code_reinit_steps: 200
+  dead_code_threshold: 0.0001
+  encoder_blocks: 0
+  decoder_blocks: 1
+  decoder_heads: 6
+  p_drop: 0.5
+
+generator:
+  H: 512
+  n_layers: 8
+  n_heads: 8
+  mlp_ratio: 4.0
+  dropout: 0.1
+  head: "ce"
+  flow_steps: 8
+  n_rep: 4
+  renorm_pred: true
+  add_channel_noise: true
+  regress_cosine: false
+  alpha: 0.0
+  corrupt:
+    mode: "swap"
+    p_first: 0.8
+    p_last: 0.2
+    s_first: 0.5
+    s_last: 0.1
+  train:
+    lr: 0.0003
+    min_lr: 0.00003
+    betas: [0.9, 0.95]
+    weight_decay: 0.1
+    warmup_steps: 500
+    max_steps: 10000
+    grad_clip: 1.0
+    batch_size: 256
+    # T5.5a F13: equal micro-batches per optimizer step (losses are averaged).
+    grad_accum: 1
+    eval_every: 500
+    save_every: 5000
+    save_milestones: true
+    # T5.5b F14: every 10% of the budget keeps the G2 comparison dense.
+    milestones: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+jepa:
+  enabled: false
+  vicreg: true
+  decoder_through_E: true
+  ema: true
+  target_chain: "online"
+  lambda_var: 1.0
+  lambda_cov: 0.04
+  lambda_pred: 1.0
+  gamma: 1.0
+  m_start: 0.996
+  m_end: 1.0
+
+train:
+  lr: 0.0005
+  min_lr: 0.00005
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+  warmup_steps: 1000
+  max_steps: 40000
+  grad_clip: 1.0
+  batch_size: 512
+  eval_every: 500
+  save_every: 5000
+  allow_synthetic_data: false
+
+eval:
+  n_samples: 256
+  n_seeds: 5
+  gpt2_model_path: "models/gpt2-large"

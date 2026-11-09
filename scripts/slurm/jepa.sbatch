@@ -26,8 +26,10 @@
 # Environment:
 #   RUN_ID    (required) names results/<RUN_ID>/ and its resume checkpoint.
 #   TOKENIZER (required) noisy tokenizer checkpoint, results/<tok_run>/ckpt/latest.pt.
-#   STEPS     (optional) training budget; unset uses configs/jepa_dev.yaml
-#             (generator.train.max_steps = 10000).
+#   STEPS     (optional) training budget; unset uses the CONFIG budget
+#             (generator.train.max_steps = 10000 in configs/jepa_dev.yaml).
+#   CONFIG    (optional) config path; default configs/jepa_dev.yaml, the lite
+#             runs use CONFIG=configs/jepa_lite.yaml.
 #   SETS      (optional) space-separated list of ablation overrides, each one
 #             written as key=value and passed as its own --set key=value. A
 #             leading "--set=" is tolerated. Example:
@@ -36,9 +38,9 @@
 #             sbatch's --export list is fragile, --export=ALL copies the
 #             environment variable as it is.
 #
-# The config is configs/jepa_dev.yaml: head flow, target_chain online, EMA on,
-# VICReg on, decoder through E. The ablation flags are the SETS above; the
-# config file is not copied per run.
+# The default config is configs/jepa_dev.yaml: head flow, target_chain online,
+# EMA on, VICReg on, decoder through E. The ablation flags are the SETS above;
+# the config file is not copied per run.
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -69,6 +71,12 @@ if [[ -f "${done_file}" ]]; then
   exit 0
 fi
 
+config="${CONFIG:-configs/jepa_dev.yaml}"
+if [[ -n "${CONFIG:-}" && ! -f "${config}" ]]; then
+  echo "ERROR: CONFIG ${config} not found" >&2
+  exit 1
+fi
+
 if [[ ! -f jncm/train_jepa.py ]]; then
   echo "ERROR: jncm/train_jepa.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -93,7 +101,7 @@ export PYTHONUNBUFFERED=1
 
 cmd=(
   python -m jncm.train_jepa
-  --config configs/jepa_dev.yaml
+  --config "${config}"
   --tokenizer "${TOKENIZER}"
   --run_id "${RUN_ID}"
 )

@@ -29,6 +29,8 @@
 # HEAD chooses the head and, by the SPEC 5.3 pairing, the tokenizer variant:
 # ce -> vq, regress/flow -> noisy. TOKENIZER is the frozen tokenizer checkpoint
 # (from tok.sbatch), RUN_ID names results/<RUN_ID>/ and its resume checkpoint.
+# CONFIG is optional (default configs/tinystories_dev.yaml); the lite runs use
+# CONFIG=configs/tinystories_lite.yaml.
 # STEPS is optional (unset = the config budget, 10,000 in the dev config); the
 # pilots pass STEPS=300. GEN_PPL=1 appends --gen_ppl, which decodes the samples
 # and scores them through the local GPT-2-large (offline; config
@@ -66,6 +68,12 @@ if [[ -f "${done_file}" ]]; then
   exit 0
 fi
 
+config="${CONFIG:-configs/tinystories_dev.yaml}"
+if [[ -n "${CONFIG:-}" && ! -f "${config}" ]]; then
+  echo "ERROR: CONFIG ${config} not found" >&2
+  exit 1
+fi
+
 if [[ ! -f jncm/train_generator.py ]]; then
   echo "ERROR: jncm/train_generator.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -92,7 +100,7 @@ ckpt="results/${RUN_ID}/ckpt/latest.pt"
 
 cmd=(
   python -m jncm.train_generator
-  --config configs/tinystories_dev.yaml
+  --config "${config}"
   --tokenizer "${TOKENIZER}"
   --set "generator.head=${HEAD}"
   --set "tokenizer.quantizer=${quant}"

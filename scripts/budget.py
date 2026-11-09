@@ -15,6 +15,7 @@ job that long would wait too long, and it must be chained into shorter chunks
 Usage:
     python scripts/budget.py
     python scripts/budget.py --results results
+    python scripts/budget.py --config configs/tinystories_lite.yaml
 """
 
 from __future__ import annotations
@@ -63,9 +64,21 @@ def pilot_sec_per_step(results_dir: Path, pilot_id: str) -> float | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, default=Path("results"))
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="config file the projection is for (default: the dev configs)",
+    )
     args = parser.parse_args(argv)
+    if args.config is not None and not args.config.is_file():
+        parser.error(f"config file not found: {args.config}")
 
     print("== jncm budget projection (H100-hours = steps x pilot sec_per_step / 3600)")
+    config_label = (
+        args.config.as_posix() if args.config is not None else "template defaults (dev)"
+    )
+    print(f"config: {config_label}")
     print(HEADER)
     totals: dict[str, float] = {}
     missing: list[str] = []

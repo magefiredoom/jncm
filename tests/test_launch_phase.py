@@ -16,10 +16,10 @@ LAUNCH = "scripts/launch_phase.sh"
 def _working_bash() -> str | None:
     candidates = [shutil.which("bash"), shutil.which("bash.exe")]
     if os.name == "nt":
-        candidates += [
+        candidates = [
             r"C:\Program Files\Git\bin\bash.exe",
             r"C:\Program Files\Git\usr\bin\bash.exe",
-        ]
+        ] + candidates
     for candidate in candidates:
         if not candidate:
             continue
@@ -120,6 +120,31 @@ def test_g1_pilot_runs_flow_and_regress_in_parallel(tmp_path: Path) -> None:
     assert all("--dependency=afterany:<LAST>" in line for line in gens)
     assert "gen_noisy_flow_dev" not in out
     assert "tok_noisy_10k" not in out
+
+
+def test_config_is_forwarded_to_every_template(tmp_path: Path) -> None:
+    """T5.5b: --config reaches tok, gen and eval through CONFIG."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run(root, ["g0", "pilot", "--config", "configs/tinystories_lite.yaml"])
+
+    assert result.returncode == 0, result.stderr
+    commands = _sbatch_lines(result.stdout)
+    assert len(commands) == 3
+    assert all(
+        "CONFIG=configs/tinystories_lite.yaml" in line for line in commands
+    )
+
+
+def test_g2_forwards_the_jepa_config(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run(root, ["g2", "pilot", "--config=configs/jepa_lite.yaml"])
+
+    assert result.returncode == 0, result.stderr
+    jepa = [line for line in _sbatch_lines(result.stdout) if "jepa.sbatch" in line]
+    assert jepa
+    assert all("CONFIG=configs/jepa_lite.yaml" in line for line in jepa)
 
 
 def test_g2_pilot_lists_ablations_without_submitting_them(tmp_path: Path) -> None:

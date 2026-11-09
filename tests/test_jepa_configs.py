@@ -53,6 +53,20 @@ def test_jepa_dev_is_the_phase2_base_run() -> None:
     _field_equalities(cfg.generator, dev.generator, GENERATOR_SIZES)
 
 
+def test_jepa_lite_is_the_lite_phase2_run() -> None:
+    cfg = load_config(Path("configs/jepa_lite.yaml"))
+    dev = load_config(Path("configs/jepa_dev.yaml"))
+
+    validate_jepa_config(cfg)
+
+    assert cfg.generator.H == 512
+    assert cfg.generator.n_layers == 8
+    assert cfg.generator.n_heads == 8
+    assert cfg.generator.train.batch_size == 256
+    _field_equalities(cfg.tokenizer, dev.tokenizer, TOKENIZER_SIZES)
+    _field_equalities(cfg.jepa, dev.jepa, tuple(vars(dev.jepa)))
+
+
 def test_jepa_smoke_is_cpu_scale_and_valid() -> None:
     cfg = load_config(Path("configs/jepa_smoke.yaml"))
     smoke = load_config(Path("configs/smoke.yaml"))

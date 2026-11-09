@@ -84,6 +84,45 @@ def test_reports_missing_pilots_and_excludes_them(tmp_path: Path) -> None:
     assert "TOTAL: 2.78 H100-hours over 1 run(s)" in result.stdout
 
 
+def test_accepts_and_prints_the_config(tmp_path: Path) -> None:
+    """T5.5b: --config is accepted and names the configuration projected."""
+    _all_pilots(tmp_path, 1.0)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/budget.py",
+            "--results",
+            str(tmp_path),
+            "--config",
+            "configs/tinystories_lite.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "configs/tinystories_lite.yaml" in result.stdout
+
+
+def test_missing_config_fails_loudly(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/budget.py",
+            "--results",
+            str(tmp_path),
+            "--config",
+            "configs/nope.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "nope.yaml" in result.stderr
+
+
 def test_pilot_reader_ignores_records_without_the_field(tmp_path: Path) -> None:
     directory = tmp_path / "pilot_x"
     directory.mkdir()

@@ -20,6 +20,8 @@
 #          --export=ALL,QUANT=noisy scripts/slurm/tok.sbatch
 # Optional overrides (defaults are unchanged: tok_<quant>_dev, config steps):
 #   --export=ALL,QUANT=vq,RUN_ID=pilot_vq,STEPS=500
+#   CONFIG (optional) selects the config; default configs/tinystories_dev.yaml,
+#   the lite runs use CONFIG=configs/tinystories_lite.yaml.
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -55,6 +57,12 @@ if [[ -f "${done_file}" ]]; then
   exit 0
 fi
 
+config="${CONFIG:-configs/tinystories_dev.yaml}"
+if [[ -n "${CONFIG:-}" && ! -f "${config}" ]]; then
+  echo "ERROR: CONFIG ${config} not found" >&2
+  exit 1
+fi
+
 if [[ ! -f jncm/train_tokenizer.py ]]; then
   echo "ERROR: jncm/train_tokenizer.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -78,7 +86,7 @@ ckpt="results/${run_id}/ckpt/latest.pt"
 
 cmd=(
   python -m jncm.train_tokenizer
-  --config configs/tinystories_dev.yaml
+  --config "${config}"
   --set "tokenizer.quantizer=${QUANT}"
   --run_id "${run_id}"
 )

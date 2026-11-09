@@ -53,6 +53,26 @@ def test_dev_configs_have_dense_milestones() -> None:
         assert cfg.generator.train.milestones == expected, path
 
 
+def test_lite_configs_scale_only_the_generator() -> None:
+    """T5.5b: H 512, 8 layers/heads, batch 256; every other field as dev."""
+    pairs = [
+        ("configs/tinystories_lite.yaml", "configs/tinystories_dev.yaml"),
+        ("configs/jepa_lite.yaml", "configs/jepa_dev.yaml"),
+    ]
+    for lite_path, dev_path in pairs:
+        lite = load_config(Path(lite_path))
+        dev = load_config(Path(dev_path))
+        assert lite.generator.H == 512
+        assert lite.generator.n_layers == 8
+        assert lite.generator.n_heads == 8
+        assert lite.generator.train.batch_size == 256
+        lite.generator.H = dev.generator.H
+        lite.generator.n_layers = dev.generator.n_layers
+        lite.generator.n_heads = dev.generator.n_heads
+        lite.generator.train.batch_size = dev.generator.train.batch_size
+        assert lite == dev, lite_path
+
+
 def test_config_yaml_round_trip(tmp_path: Path) -> None:
     cfg_orig = load_config(Path("configs/smoke.yaml"))
     yaml_text = dump_config(cfg_orig)

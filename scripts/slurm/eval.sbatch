@@ -34,7 +34,9 @@
 # run_eval.py reads it from the checkpoint. RUN_ID names results/<RUN_ID>/ (its
 # ckpt/milestone_*.pt files are evaluated).
 # N_SEEDS (default 5) and N_SAMPLES (default 256) match SPEC 6.1; GPT2_MODEL_PATH
-# defaults to models/gpt2-large.
+# defaults to models/gpt2-large. CONFIG is optional (default
+# configs/tinystories_dev.yaml); the lite runs use
+# CONFIG=configs/tinystories_lite.yaml (or configs/jepa_lite.yaml for a joint run).
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -52,6 +54,11 @@ set -euo pipefail
 # tokenizer); when it is set, the file must exist.
 
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+config="${CONFIG:-configs/tinystories_dev.yaml}"
+if [[ -n "${CONFIG:-}" && ! -f "${config}" ]]; then
+  echo "ERROR: CONFIG ${config} not found" >&2
+  exit 1
+fi
 if [[ ! -f scripts/run_eval.py ]]; then
   echo "ERROR: scripts/run_eval.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -85,7 +92,7 @@ seed="${SLURM_ARRAY_TASK_ID:-0}"
 
 cmd=(
   python scripts/run_eval.py
-  --config configs/tinystories_dev.yaml
+  --config "${config}"
   --run_id "${RUN_ID}"
 )
 if [[ -n "${TOKENIZER:-}" ]]; then
