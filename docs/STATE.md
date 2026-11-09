@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-09 (T5.5b review fixes F14/F15/F17, lite configs, CONFIG/--config and gen.sbatch SETS done; G0a tokenizer jobs 2880034/2880035 still PENDING on FIR)
+Last updated: 2026-11-09 (FIR sync + pilot session: 2880034 tok_vq_10k COMPLETED and passes the vq threshold; 2880035 still PENDING; sync BLOCKED — no ~/jncm_git clone and no models/ on FIR; nothing dry-run or submitted)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -10,19 +10,26 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - All five Slurm templates now exist (`prep`, `tok`, `gen`, `eval`, `jepa`); `eval.sbatch` evaluates milestone checkpoints with one array task per seed (joint JEPA checkpoints included), `jepa.sbatch` and `gen.sbatch` run arms from `SETS`, and all four training/eval templates accept an optional `CONFIG`.
 - T5.5b milestone checkpoints: the dev configs write `ckpt/milestone_<pct>.pt` every 10% (`[0.1, ..., 1.0]`), `smoke` configs keep 10/25/50/100%, milestone files omit Adam state, and `run_eval.py` evaluates exactly those by default.
 - T0.2 real data prep and the T1.2 protocol gate are now verified locally on real TinyStories data; `models/gpt2-large` is present in `models/gpt2-large`.
-- Gate G0a is next (cluster, human): sync the FIR tree and copy `data/tinystories/` + `models/gpt2-large/` first (`RUNBOOK.md` §1).
-- G0a tokenizer jobs (2026-11-07): the 24 h pending job 2800220 was cancelled; the submitted pair is in **FIR jobs** below.
+- Gate G0a is next (cluster, human): sync the FIR tree and copy `data/tinystories/` + `models/gpt2-large/` first (`RUNBOOK.md` §1). **BLOCKED 2026-11-09**: FIR has no `~/jncm_git` (only the non-git tar tree `~/jncm` and `~/jncm_agent`), no `models/` anywhere under `$HOME`, and `GPT2_LARGE_PATH` is unset; the pilots were neither dry-run nor submitted. The human must run the clone/pull block in "Human must fill / do".
+- G0a tokenizer jobs: 2880034 `tok_vq_10k` **COMPLETED** (`02:21:20`, final step 10000, `acc_full 0.99998` -> PASS); 2880035 `tok_noisy_10k` still PENDING; the 24 h job 2800220 was cancelled.
 
 ## FIR jobs
 
-| Job ID | Run ID | STEPS | Time limit | State |
+| Job ID | Run ID | STEPS | Time limit | State (polled 2026-11-09) |
 | --- | --- | --- | --- | --- |
-| 2880034 | `tok_vq_10k` | 10,000 | 04:00:00 | PENDING at submit (not polled since) |
-| 2880035 | `tok_noisy_10k` | 10,000 | 04:00:00 | PENDING at submit (not polled since) |
+| 2880034 | `tok_vq_10k` | 10,000 | 04:00:00 | **COMPLETED** `02:21:20`, `ExitCode 0:0`; final step 10000, `acc_full 0.9999847` -> G0a vq PASS (>= 0.999) |
+| 2880035 | `tok_noisy_10k` | 10,000 | 04:00:00 | **PENDING** (queued since 2026-11-07, `4:00:00` limit); `results/tok_noisy_10k` does not exist yet |
 
-Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither 10k job had been polled when this table was written, so their state is UNVERIFIED beyond the submit record. T4.5 changed no FIR job (nothing submitted or polled).
+Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. **No `DONE` file exists for 2880034** because the FIR `~/jncm` tree predates T4.5 (`grep -c write_done jncm/utils.py` -> `0`); completion is established by `sacct` plus the final metrics record at `step 10000`, and that record is the config budget, so the run owes nothing. Wall clock per step (startup included): `02:21:20 / 10,000` = 0.85 s/step; use a real pilot record, not this number, to size a chain. No job was submitted or polled further this session; the sync blocker below stopped the pilot work.
 
 ## VERIFIED (command + last lines of output)
+
+### FIR channel, sync check and tokenizer poll — 2026-11-09 (zellij `attach`, pane `terminal_0`)
+- Channel proof: `hostname -f; echo ZNCM-1109-QP4; whoami` -> `login1.int.fir.alliancecan.ca` / `ZNCM-1109-QP4` / `aefad`.
+- Sync check: `cd ~/jncm_git && pwd && hostname -f && echo ZNCM-1109-QP4` -> `-bash: cd: /home/aefad/jncm_git: No such file or directory`; `ls -d ~/jncm*` -> `/home/aefad/jncm  /home/aefad/jncm_agent`; `test -d ~/jncm/.git && echo ISGIT || echo NOGIT` -> `NOGIT`; `ls -d /scratch/aefad/jncm*` -> nothing. So no clone exists to pull, HEAD could not be compared, and nothing was improvised (no credentials typed).
+- Data/models: `ls -l ~/jncm/data ~/jncm/models` -> `ls: cannot access '/home/aefad/jncm/models': No such file or directory`, `data/tinystories` present (`du -sh` -> `900M`); `echo P=$GPT2_LARGE_PATH` -> `P=` and `ls -d models models/gpt2-large` -> `No such file or directory` for both; `find ~ -maxdepth 3 -name "gpt2*"` -> nothing. `GPT2_LARGE_PATH` does not resolve on FIR, so the Gen PPL hook cannot run there yet.
+- Job state: `squeue -u $USER -o "%.8i %.14j %.8T %.10M %.11l"` -> `2880035 jncm_tok PENDING 0:00 4:00:00` (other rows are another project's `nr-*` jobs, untouched); `sacct -j 2880034,2880035 --format=JobID,JobName%20,State,Elapsed,ExitCode` -> `2880034 jncm_tok COMPLETED 02:21:20 0:0` and `2880035 jncm_tok PENDING 00:00:00 0:0`; `ls -l results/tok_vq_10k/DONE results/tok_noisy_10k/DONE` -> `No such file or directory` for both (expected: that tree has no `write_done`), `results/tok_noisy_10k` absent.
+- `tok_vq_10k` last record (`tail -n1 results/tok_vq_10k/metrics.jsonl`, 21 records): `"step": 10000`, `"data_source": "real"`, `"acc_full": 0.9999847412109375`, `"acc_cum": [0.0776, 0.1442, 0.2911, 0.6144, 0.7533, 0.8854, 0.9370, 0.9715, 0.9856, 0.9929, 0.9945, 0.99998]`, `"codebook_usage": [0.104, 0.730, 0.849, 0.881, 0.885, 0.919, 0.923, 0.937, 0.970, 0.991, 0.789, 0.571]`, `"codebook_perplexity": [401.5, 2426.9, 2645.8, 2577.2, 2661.6, 2655.7, 2744.7, 2775.8, 2707.0, 3185.6, 1689.9, 437.4]`. Gate verdict: PASS vs the 0.999 vq threshold, `acc_cum` rises gradually, but the two coarsest levels (11/12) lose codebook usage and perplexity late in training — worth watching on the noisy arm.
 
 ### T5.5b review fixes F14/F15/F17, lite configs, CONFIG/SETS — VERIFIED 2026-11-09
 - F14 focused (earlier this session): `.venv/Scripts/python.exe -m pytest -q` over the new milestone/config/gate-report tests -> `5 passed`. The dev configs now list `[0.1, ..., 1.0]`; a milestone checkpoint has no `optimizer_state_dict` while `latest.pt` still has it; `run_eval.py` loads an optimizer-less milestone; `gate_report.py` interpolates the denser curve.
@@ -436,6 +443,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 10. RESOLVED 2026-11-07: `scripts/g0a_report.py` takes `--runs` (default `tok_vq_10k tok_noisy_10k`) and keys the thresholds on each run's quantizer variant (0.999 vq / 0.995 noisy), read from `results/<run_id>/config.yaml` (`tokenizer.quantizer`) with a run-id fallback; an unknown variant fails loudly. The 10k gate pair can now be judged directly.
 11. With `jepa.vicreg` on and `head=flow`, the VICReg c-hat term integrates the flow (`flow_steps` network calls per level) inside the loss (Q11), so a JEPA flow step costs more than a Phase-1 flow step; `regress` has no such overhead. The EMA copy also holds the tokenizer decoder, which the target chain never uses (Q10).
 12. RESOLVED 2026-11-08 (T4.4): `scripts/slurm/eval.sbatch` no longer requires `TOKENIZER`. It passes `--tokenizer` only when the variable is set, so a joint JEPA run (`run_eval.py` reads the tokenizer from the joint checkpoint) works without it; a staged run still needs `TOKENIZER=<path>` (RUNBOOK §3A.3).
+13. FIR `~/jncm` (the tar tree) predates T4.5: `grep -c write_done jncm/utils.py` -> `0`, so runs there write no `results/<run_id>/DONE` and completion has to be read from `sacct` plus the last metrics record. The `~/jncm_git` clone fixes this once it exists. FIR also has no `models/` directory at all and `GPT2_LARGE_PATH` is unset, so `RUNBOOK.md` §1.2 must be repeated before any generator or eval job.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
@@ -475,6 +483,16 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 ## Human must fill / do
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
 - Before G0a/G0: sync the FIR tree from the private remote and copy `data/tinystories/` + `models/gpt2-large/` (`RUNBOOK.md` §1.1/§1.2; every ssh/rsync asks for MFA).
+- **BLOCKED 2026-11-09 — only the human can do this (agents must never type credentials).** On FIR, in the zellij pane:
+  ```bash
+  cd ~ && git clone https://github.com/magefiredoom/jncm jncm_git
+  ln -s ~/jncm/data ~/jncm_git/data
+  ```
+  If GitHub prompts, enter your username and a personal access token yourself. Then, from the local repo root (MFA):
+  ```bash
+  rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/
+  ```
+  and on FIR: `ln -s ~/jncm/models ~/jncm_git/models; export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large`. Verify with `cd ~/jncm_git && git rev-parse HEAD` (must equal the local SHA; this session pushed `2422239` plus the docs commit that follows it), `git status --short` (empty), and `ls $GPT2_LARGE_PATH/config.json`.
 - Run Gate G0a on a cluster GPU: jobs 2880034/2880035 (`tok_vq_10k`/`tok_noisy_10k`, 10,000 steps, 4 h); record exact-token accuracy with `RUNBOOK.md` §4.2.
 - **T4.1 placeholders — every one of them (nothing is guessed in the scripts):**
   - Account: pass `--account="$SBATCH_ACCOUNT"` on the sbatch command line (or let your submit wrapper read `$SLURM_ACCOUNT`); no account appears in any of the three files.
@@ -508,13 +526,13 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Human: sync FIR (`RUNBOOK.md` §1), then wait for or resubmit jobs 2880034 (`tok_vq_10k`) and 2880035 (`tok_noisy_10k`) and judge G0a with `RUNBOOK.md` §4.2.
+1. Human: run the `~/jncm_git` clone + models symlink block in "Human must fill / do" (that is the current blocker). Then the next agent session re-runs the sync, polls 2880035, dry-runs the g0/g1/g2 pilots for the dev and lite configs, and submits only after your "go". `tok_vq_10k` already passes G0a for vq.
 2. Human: G0 with `HEAD=ce`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `RUN_ID=gen_vq_ce_dev`, then `eval.sbatch`/`--merge`/`plot_curves.py` (`RUNBOOK.md` §2.2).
 3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4. T5.3 is done; the next agent task is T5.4 (ablation configs and runbook section).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
-- G0a: not run
+- G0a: vq `tok_vq_10k` (2880034) COMPLETED 2026-11-09 — final step 10000, `acc_full 0.9999847`, `acc_cum` 0.078 -> 1.000, PASS vs 0.999. Noisy `tok_noisy_10k` (2880035) PENDING, no numbers yet.
 - G0: not run
 - G1: not run
 - G2: not run
