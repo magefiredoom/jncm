@@ -32,7 +32,11 @@
 # CONFIG is optional (default configs/tinystories_dev.yaml); the lite runs use
 # CONFIG=configs/tinystories_lite.yaml.
 # STEPS is optional (unset = the config budget, 10,000 in the dev config); the
-# pilots pass STEPS=300. GEN_PPL=1 appends --gen_ppl, which decodes the samples
+# pilots pass STEPS=300.
+# SETS is an optional space-separated list of ablation overrides, each written
+# as key=value and passed as its own --set key=value. A leading "--set=" is
+# tolerated. Example: SETS="generator.corruption.p=0.2 tokenizer.vq.codebook_size=256".
+# GEN_PPL=1 appends --gen_ppl, which decodes the samples
 # and scores them through the local GPT-2-large (offline; config
 # eval.gpt2_model_path, models/gpt2-large); the pilots always turn it on.
 #
@@ -110,6 +114,19 @@ cmd=(
 if [[ -n "${STEPS:-}" ]]; then
   cmd+=(--steps "${STEPS}")
 fi
+
+if [[ -n "${SETS:-}" ]]; then
+  read -r -a sets_array <<< "${SETS}"
+  for override in "${sets_array[@]}"; do
+    override="${override#--set=}"
+    if [[ "${override}" != *=* ]]; then
+      echo "ERROR: SETS entry '${override}' is not key=value (e.g. generator.head=ce)" >&2
+      exit 2
+    fi
+    cmd+=(--set "${override}")
+  done
+fi
+
 if [[ "${GEN_PPL:-0}" == "1" ]]; then
   cmd+=(--gen_ppl)
 fi

@@ -97,3 +97,80 @@ def test_eval_sbatch_uses_the_config_environment_variable(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     assert "--config configs/tinystories_lite.yaml" in result.stdout
+
+
+def _gen_fixture(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    (root / "jncm").mkdir(parents=True)
+    (root / "jncm" / "train_generator.py").write_text("", encoding="utf-8")
+    (root / "tokenizer.pt").write_text("", encoding="utf-8")
+    venv = root / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "activate").write_text(
+        "python() { printf 'PYTHON_ARGS'; printf ' %s' \"$@\"; printf '\\n'; }\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _gen_env(root: Path, **extra: str) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "TOKENIZER",
+            "RUN_ID",
+            "CONFIG",
+            "SETS",
+            "HEAD",
+            "STEPS",
+            "GEN_PPL",
+            "SLURM_SUBMIT_DIR",
+        }
+    }
+    env.update(
+        {
+            "SLURM_SUBMIT_DIR": str(root),
+            "RUN_ID": "fake_gen",
+            "HEAD": "ce",
+            "TOKENIZER": "tokenizer.pt",
+        }
+    )
+    env.update(extra)
+    return env
+
+
+def test_gen_sbatch_passes_sets_as_individual_overrides(tmp_path: Path) -> None:
+    root = _gen_fixture(tmp_path)
+
+    result = subprocess.run(
+        [BASH, str(Path("scripts/slurm/gen.sbatch").resolve())],
+        cwd=str(root),
+        env=_gen_env(
+            root,
+            SETS="--set=generator.corruption.p=0.2 tokenizer.vq.codebook_size=256",
+        ),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    args = result.stdout.split("PYTHON_ARGS", 1)[1]
+    assert "--set generator.corruption.p=0.2" in args
+    assert "--set tokenizer.vq.codebook_size=256" in args
+
+
+def test_gen_sbatch_rejects_a_sets_entry_without_key_value(tmp_path: Path) -> None:
+    root = _gen_fixture(tmp_path)
+
+    result = subprocess.run(
+        [BASH, str(Path("scripts/slurm/gen.sbatch").resolve())],
+        cwd=str(root),
+        env=_gen_env(root, SETS="not-an-override"),
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "not key=value" in result.stderr
