@@ -171,6 +171,38 @@ def validate_grad_accum(batch_size: int, grad_accum: int) -> None:
         )
 
 
+def frozen_codes(
+    tokenizer: MultiscaleTokenizer,
+    x: torch.Tensor,
+    cfg: Config,
+    generator: torch.Generator | None = None,
+) -> tuple[Any, list[torch.Tensor]]:
+    """Frozen tokenizer chain and corrupted conditioning, always in fp32.
+
+    T5.5b F17: the staged trainer runs the rest of the step under bf16 autocast
+    on CUDA. The frozen tokenizer must not, or the clean targets and the
+    conditioning codes would carry bf16 rounding.
+
+    Args:
+        tokenizer: Frozen tokenizer (eval mode, no gradients).
+        x: Token ids of shape [B, L].
+        cfg: Config with the corruption schedule.
+        generator: Optional RNG shared with the rest of the step.
+
+    Returns:
+        ``(Encoded, corrupted code list)``.
+    """
+    with torch.no_grad(), torch.autocast(device_type=x.device.type, enabled=False):
+        enc = tokenizer.encode(x, generator=generator)
+        codes = corrupt_codes(
+            enc.codes,
+            cfg.generator.corrupt,
+            generator=generator,
+            quantizer=cfg.tokenizer.quantizer,
+        )
+    return enc, codes
+
+
 def compute_generator_loss(
     tokenizer: MultiscaleTokenizer,
     backbone: GeneratorBackbone,
@@ -190,14 +222,7 @@ def compute_generator_loss(
     Returns:
         (weighted total loss, list of per-level mean losses).
     """
-    with torch.no_grad():
-        enc = tokenizer.encode(x, generator=generator)
-        codes = corrupt_codes(
-            enc.codes,
-            cfg.generator.corrupt,
-            generator=generator,
-            quantizer=cfg.tokenizer.quantizer,
-        )
+    enc, codes = frozen_codes(tokenizer, x, cfg, generator=generator)
     # input_embed is generator-owned and must train (T5.5a F11); embed_levels
     # keeps only the tokenizer-side pooled reconstructions under no_grad.
     level_inputs = backbone.embed_levels(tokenizer, codes)

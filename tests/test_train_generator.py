@@ -42,6 +42,7 @@ from jncm.train_generator import (
     build_generator,
     compute_generator_loss,
     diversity_metrics,
+    frozen_codes,
     load_tokenizer,
     sample_and_score,
     train,
@@ -370,6 +371,42 @@ def test_grad_accum_position_accounting_uses_full_batch(tmp_path: Path) -> None:
         2 * 4 * cfg.L,
     ]
     assert all(record["sec_per_step"] > 0.0 for record in records)
+
+
+def test_frozen_tokenizer_targets_ignore_bf16_autocast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T5.5b F17: a CPU bf16-autocast step gives the same clean targets as fp32."""
+    cfg = _smoke_cfg()
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    tokenizer, _, _ = _load_generator(ckpt, cfg)
+    x = torch.randint(0, cfg.V, (2, cfg.L))
+    seen: dict[str, bool] = {}
+    real_encode = tokenizer.encode
+
+    def spy_encode(*args, **kwargs):
+        seen["autocast_enabled"] = torch.is_autocast_enabled("cpu")
+        return real_encode(*args, **kwargs)
+
+    monkeypatch.setattr(tokenizer, "encode", spy_encode)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        enc_bf16, codes_bf16 = frozen_codes(
+            tokenizer, x, cfg, generator=torch.Generator().manual_seed(7)
+        )
+    assert seen["autocast_enabled"] is False
+    enc_fp32, codes_fp32 = frozen_codes(
+        tokenizer, x, cfg, generator=torch.Generator().manual_seed(7)
+    )
+
+    assert all(code.dtype == torch.float32 for code in codes_bf16)
+    assert all(
+        torch.equal(bf16, fp32)
+        for bf16, fp32 in zip(enc_bf16.targets, enc_fp32.targets)
+    )
+    assert all(
+        torch.equal(bf16, fp32)
+        for bf16, fp32 in zip(codes_bf16, codes_fp32)
+    )
 
 
 def test_first_metrics_record_logs_parameter_counts(tmp_path: Path) -> None:
