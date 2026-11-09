@@ -324,6 +324,31 @@ def test_decoder_through_E_controls_encoder_gradients() -> None:
     assert grads[False] is None or grads[False].abs().sum().item() == 0
 
 
+def test_one_joint_step_gives_every_generator_parameter_a_gradient() -> None:
+    """T5.5a F11: the shared level-input path must train ``input_embed``."""
+    cfg = _cfg()
+    tokenizer, backbone, head = _build(cfg)
+
+    step = joint_loss(
+        cfg,
+        tokenizer,
+        backbone,
+        head,
+        _batch(cfg),
+        generator=torch.Generator().manual_seed(0),
+    )
+    step.loss.backward()
+
+    missing = [
+        name
+        for name, param in (
+            list(backbone.named_parameters()) + list(head.named_parameters())
+        )
+        if param.grad is None
+    ]
+    assert not missing, f"parameters without a gradient: {missing}"
+
+
 def test_joint_loss_rejects_phase1_configs() -> None:
     cfg = _cfg()
     cfg.tokenizer.quantizer = "vq"

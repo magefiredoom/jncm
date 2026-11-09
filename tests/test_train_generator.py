@@ -215,6 +215,36 @@ def test_one_packed_backbone_pass_per_loss(tmp_path: Path) -> None:
     assert shapes[0] == (N_SEQ * K, cfg.L, cfg.generator.H)
 
 
+@pytest.mark.parametrize(("head_name", "quantizer"), [("ce", "vq"), ("flow", "noisy")])
+def test_one_staged_step_gives_every_generator_parameter_a_gradient(
+    tmp_path: Path, head_name: str, quantizer: str
+) -> None:
+    """T5.5a F11: ``input_embed`` must train, not stay at random init."""
+    cfg = _smoke_cfg(head_name, quantizer)
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    tok, backbone, head_mod = _load_generator(ckpt, cfg)
+    x = torch.randint(0, cfg.V, (4, cfg.L))
+
+    loss, _ = compute_generator_loss(
+        tok,
+        backbone,
+        head_mod,
+        x,
+        cfg,
+        generator=torch.Generator().manual_seed(0),
+    )
+    loss.backward()
+
+    missing = [
+        name
+        for name, param in (
+            list(backbone.named_parameters()) + list(head_mod.named_parameters())
+        )
+        if param.grad is None
+    ]
+    assert not missing, f"parameters without a gradient: {missing}"
+
+
 def test_train_writes_metrics_and_position_accounting(tmp_path: Path) -> None:
     cfg = _smoke_cfg()
     cfg.generator.train.batch_size = 4

@@ -331,12 +331,17 @@ class GeneratorBackbone(nn.Module):
         s_k = down(zhat_prev, self.schedule[k - 1])
         return self.input_embed([s_k], levels=[k])[0]
 
-    def embed_levels(
+    def pooled_reconstructions(
         self,
         tokenizer: "MultiscaleTokenizer",
         codes: Sequence[torch.Tensor],
     ) -> list[torch.Tensor]:
-        """Build all level inputs; level k uses only codes j < k (SPEC 5.1)."""
+        """Pooled prefix reconstructions ``s_k = down(zhat_{k-1}, l_k)``.
+
+        The chain ``zhat`` is built only from the tokenizer's frozen
+        contribution modules, so callers keep this part under ``no_grad``
+        (T5.5a F11). Shapes: one ``[B, l_k, d]`` tensor per level.
+        """
         required = self.K - 1
         if len(codes) < required:
             raise ValueError(
@@ -349,6 +354,21 @@ class GeneratorBackbone(nn.Module):
             reps.append(down(zhat, self.schedule[k - 1]))
             if k < self.K:
                 zhat = zhat + tokenizer.contrib(k, codes[k - 1])
+        return reps
+
+    def embed_levels(
+        self,
+        tokenizer: "MultiscaleTokenizer",
+        codes: Sequence[torch.Tensor],
+    ) -> list[torch.Tensor]:
+        """Build all level inputs; level k uses only codes j < k (SPEC 5.1).
+
+        The pooled cumulative reconstructions are tokenizer-only and run under
+        ``no_grad``; ``input_embed`` is applied outside so its parameters train
+        (T5.5a F11). Both trainers call this function.
+        """
+        with torch.no_grad():
+            reps = self.pooled_reconstructions(tokenizer, codes)
         return self.input_embed(reps, levels=list(range(1, self.K + 1)))
 
     def forward_codes(

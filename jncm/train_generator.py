@@ -181,7 +181,9 @@ def compute_generator_loss(
             generator=generator,
             quantizer=cfg.tokenizer.quantizer,
         )
-        level_inputs = backbone.embed_levels(tokenizer, codes)
+    # input_embed is generator-owned and must train (T5.5a F11); embed_levels
+    # keeps only the tokenizer-side pooled reconstructions under no_grad.
+    level_inputs = backbone.embed_levels(tokenizer, codes)
     hidden = backbone.forward_levels(level_inputs)
     _, per_level = head.loss(hidden, enc.targets, generator=generator)
     total = weighted_total(per_level, backbone.schedule, cfg.generator.alpha)
