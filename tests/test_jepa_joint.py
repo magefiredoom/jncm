@@ -349,6 +349,27 @@ def test_one_joint_step_gives_every_generator_parameter_a_gradient() -> None:
     assert not missing, f"parameters without a gradient: {missing}"
 
 
+def test_joint_prediction_path_reaches_encoder_conditioning() -> None:
+    """T5.5a F11 + SPEC 8 step 3: E trains through the generator conditioning."""
+    cfg = _cfg()
+    cfg.jepa.decoder_through_E = False
+    cfg.jepa.vicreg = False
+    tokenizer, backbone, head = _build(cfg)
+
+    step = joint_loss(
+        cfg,
+        tokenizer,
+        backbone,
+        head,
+        _batch(cfg),
+        generator=torch.Generator().manual_seed(0),
+    )
+    step.loss.backward()
+
+    grad = tokenizer.tok_emb.weight.grad
+    assert grad is not None and grad.abs().sum().item() > 0.0
+
+
 def test_joint_loss_rejects_phase1_configs() -> None:
     cfg = _cfg()
     cfg.tokenizer.quantizer = "vq"

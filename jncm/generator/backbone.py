@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import torch
@@ -363,11 +364,17 @@ class GeneratorBackbone(nn.Module):
     ) -> list[torch.Tensor]:
         """Build all level inputs; level k uses only codes j < k (SPEC 5.1).
 
-        The pooled cumulative reconstructions are tokenizer-only and run under
-        ``no_grad``; ``input_embed`` is applied outside so its parameters train
-        (T5.5a F11). Both trainers call this function.
+        When the tokenizer is frozen (staged runs), the pooled cumulative
+        reconstructions are tokenizer-only and run under ``no_grad``. In joint
+        mode E is trainable, so they stay in the graph and the prediction loss
+        reaches E through the conditioning (SPEC 8 step 3). ``input_embed`` is
+        always applied outside (T5.5a F11). Both trainers call this function.
         """
-        with torch.no_grad():
+        frozen = not any(
+            parameter.requires_grad for parameter in tokenizer.parameters()
+        )
+        context = torch.no_grad() if frozen else nullcontext()
+        with context:
             reps = self.pooled_reconstructions(tokenizer, codes)
         return self.input_embed(reps, levels=list(range(1, self.K + 1)))
 
