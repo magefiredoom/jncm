@@ -151,6 +151,31 @@ def test_nested_dropout_frequencies() -> None:
         assert abs(freq_sub - (p_drop / (K - 1))) < 0.02
 
 
+def test_sample_cutoff_accepts_a_cpu_generator() -> None:
+    """T5.5a F12: the draws follow the generator's device (CPU case)."""
+    gen = torch.Generator(device="cpu").manual_seed(7)
+    cuts = [sample_cutoff(4, p_drop=1.0, generator=gen) for _ in range(32)]
+    assert all(1 <= cut < 4 for cut in cuts)
+
+    def replay() -> list[int]:
+        generator = torch.Generator(device="cpu").manual_seed(3)
+        return [sample_cutoff(4, p_drop=0.5, generator=generator) for _ in range(16)]
+
+    assert replay() == replay()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_sample_cutoff_accepts_a_cuda_generator() -> None:
+    """T5.5a F12: a CUDA generator must not be used for CPU draws."""
+    gen = torch.Generator(device="cuda").manual_seed(7)
+    cuts = [sample_cutoff(4, p_drop=1.0, generator=gen) for _ in range(32)]
+    assert all(1 <= cut < 4 for cut in cuts)
+
+    generator = torch.Generator(device="cuda").manual_seed(3)
+    cuts = [sample_cutoff(4, p_drop=0.5, generator=generator) for _ in range(16)]
+    assert all(1 <= cut <= 4 for cut in cuts)
+
+
 def test_vq_ema_update_and_dead_code_reinit() -> None:
     # Acceptance (f): vq EMA update changes codebooks; dead-code reinit triggers
     seed_everything(505)

@@ -91,13 +91,18 @@ def sample_cutoff(K: int, p_drop: float, generator: torch.Generator | None = Non
     """
     Sample nested dropout cutoff index (SPEC 4.4).
 
-    With probability p_drop pick cut ~ Uniform{1..K-1}, else cut = K.
+    With probability p_drop pick cut ~ Uniform{1..K-1}, else cut = K. The draws
+    are placed on the generator's device when one is given (T5.5a F12), so a
+    CUDA generator does not clash with a default CPU tensor.
     """
     if p_drop <= 0.0 or K <= 1:
         return K
-    r = torch.rand(1, generator=generator).item()
+    device = generator.device if generator is not None else "cpu"
+    r = torch.rand(1, generator=generator, device=device).item()
     if r < p_drop:
-        return int(torch.randint(1, K, (1,), generator=generator).item())
+        return int(
+            torch.randint(1, K, (1,), generator=generator, device=device).item()
+        )
     return K
 
 
