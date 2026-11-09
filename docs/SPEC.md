@@ -1,4 +1,4 @@
-# SPEC — jncm (v1.4, 2026-11-08)
+# SPEC — jncm (v1.5, 2026-11-09)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
 
@@ -9,6 +9,8 @@ Source of truth for all implementation work. Items tagged **[DECISION]** are des
 **v1.3 changes:** diversity metrics `unique_frac` and `pairwise_agree` added to evaluation (6.1); the `regress` head's collapse at level 1 is documented as expected behavior of the ablation (5.3).
 
 **v1.4 changes:** JEPA targets are teacher-forced on the online chain by default (8, step 2) with the old definition kept as `target_chain: ema_clean`; joint-run position accounting defined (6.2).
+
+**v1.5 changes** (from docs/REVIEW_M3-M5.md): the generator's input embedding is trained in staged and joint runs alike (5.1); gradient accumulation and per-arm parameter counts (5.7); denser milestones, optimizer-free milestone files (6.2).
 
 ## 1. Purpose and scope
 
@@ -143,7 +145,7 @@ Given tokens x and the frozen tokenizer in eval mode (no grad):
 3. For each k: `zhat~_{k-1} = sum_{j<k} tok.contrib(j, codes~_j)`; `zhat~_0 = 0`.
 4. Level-k input tokens: `s_k = down(zhat~_{k-1}, l_k)` -> [B,l_k,d]; `x_k = Linear(d->H)(s_k) + SinPos(p_i) + LevelEmb(k)`, where p_i = (i+0.5)/l_k in (0,1) and SinPos uses 64 log-spaced frequencies (sin and cos) projected to H. **[DECISION]** (normalized positions instead of RoPE, because levels have different resolutions.)
 
-Level k must depend only on levels < k. This is the most likely place for a bug (off-by-one); it has a dedicated test (TASKS T3.1).
+Level k must depend only on levels < k. This is the most likely place for a bug (off-by-one); it has a dedicated test (TASKS T3.1). The frozen-tokenizer part (encode, corruption, cumulative reconstruction) runs under no_grad; the input embedding (projection of the reconstruction, level embedding, position projection) belongs to the generator and must receive gradients in staged and joint runs alike (test: after one backward pass every backbone parameter has a gradient).
 
 ### 5.2 Backbone
 
@@ -184,7 +186,7 @@ Exactly K backbone forward passes per batch (unit test counts them with a forwar
 
 ### 5.7 Defaults (dev)
 
-AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, clip 1.0, bf16, batch 1024, 10k steps (the budget NCM used for its TinyStories ablations, about 1.3B positions), generator about 90M parameters.
+AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, clip 1.0, bf16, batch 1024, 10k steps (the budget NCM used for its TinyStories ablations, about 1.3B positions), generator about 90M parameters (85M backbone plus the head: ce adds about 38M, flow about 15M, regress under 1M; log and report parameter counts per arm). The optimizer batch `batch_size` may be processed as `generator.train.grad_accum` equal micro-batches (losses averaged, position accounting counts the full batch; VICReg statistics are per micro-batch). This is required when the packed K-level batch does not fit: batch 1024 is about 1.6M padded tokens per step.
 
 ## 6. Evaluation (`jncm/eval/`, `scripts/`)
 
@@ -198,7 +200,7 @@ AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, 
 
 ### 6.2 Token accounting (for the sample-efficiency claim)
 
-Every metrics record carries `tok_positions` (tokenizer steps x batch x L), `gen_positions` (generator steps x batch x L) and `total_positions` (sum). For comparisons, curves are plotted against `total_positions`, with the tokenizer budget added as an offset for generator curves. Both discrete and continuous runs use identical accounting. Joint (JEPA) runs train tokenizer and generator in one loop, so each sample is seen once by both objectives: record `joint_positions` = steps x B x L, `total_positions = joint_positions`, and `total_positions_conservative = 2 x joint_positions` (the count comparable to staged runs if both objectives are charged); plot both.
+Every metrics record carries `tok_positions` (tokenizer steps x batch x L), `gen_positions` (generator steps x batch x L) and `total_positions` (sum). For comparisons, curves are plotted against `total_positions`, with the tokenizer budget added as an offset for generator curves. Both discrete and continuous runs use identical accounting. Joint (JEPA) runs train tokenizer and generator in one loop, so each sample is seen once by both objectives: record `joint_positions` = steps x B x L, `total_positions = joint_positions`, and `total_positions_conservative = 2 x joint_positions` (the count comparable to staged runs if both objectives are charged); plot both. Every run saves milestone checkpoints at 10%, 20%, ..., 100% of training (so equal-position comparisons have enough points); milestone files omit optimizer state.
 
 ### 6.3 Samples
 
