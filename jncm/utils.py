@@ -43,6 +43,23 @@ def write_done(run_dir: str | Path, *, step: int, sec_per_step: float) -> Path:
     return path
 
 
+def parameter_counts(**modules: torch.nn.Module) -> dict[str, int]:
+    """Parameter counts of named modules plus their total (T5.5b F15).
+
+    Args:
+        **modules: Named modules, e.g. ``tokenizer=``, ``backbone=``, ``head=``.
+
+    Returns:
+        ``{"n_params_<name>": int, ..., "n_params_total": int}``.
+    """
+    counts = {
+        f"n_params_{name}": int(sum(p.numel() for p in module.parameters()))
+        for name, module in modules.items()
+    }
+    counts["n_params_total"] = int(sum(counts.values()))
+    return counts
+
+
 def seed_everything(seed: int = 42) -> None:
     """Seed Python random, NumPy, and PyTorch (CPU and CUDA)."""
     random.seed(seed)

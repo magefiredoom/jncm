@@ -372,6 +372,41 @@ def test_grad_accum_position_accounting_uses_full_batch(tmp_path: Path) -> None:
     assert all(record["sec_per_step"] > 0.0 for record in records)
 
 
+def test_first_metrics_record_logs_parameter_counts(tmp_path: Path) -> None:
+    """T5.5b F15: tokenizer, backbone, head and total counts on the first record."""
+    cfg = _smoke_cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.eval_every = 10
+    cfg.generator.train.save_every = 10
+    cfg.generator.train.warmup_steps = 1
+    cfg.generator.train.save_milestones = False
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(
+        tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L))
+    )
+
+    run_dir = train(
+        cfg,
+        ckpt,
+        max_steps=2,
+        run_id="gen_params",
+        results_dir=tmp_path / "results",
+        data_dir=data_dir,
+    )
+
+    records = JSONLLogger(run_dir / "metrics.jsonl").read_all()
+    first = records[0]
+    tokenizer, backbone, head = _load_generator(ckpt, cfg)
+    expected = {
+        "n_params_tokenizer": sum(p.numel() for p in tokenizer.parameters()),
+        "n_params_backbone": sum(p.numel() for p in backbone.parameters()),
+        "n_params_head": sum(p.numel() for p in head.parameters()),
+    }
+    expected["n_params_total"] = sum(expected.values())
+    assert {key: first[key] for key in expected} == expected
+    assert "n_params_total" not in records[-1]
+
+
 def test_train_writes_metrics_and_position_accounting(tmp_path: Path) -> None:
     cfg = _smoke_cfg()
     cfg.generator.train.batch_size = 4

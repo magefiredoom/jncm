@@ -54,7 +54,7 @@ from jncm.train_generator import (
     diversity_metrics,
     load_tokenizer,
 )
-from jncm.utils import seed_everything
+from jncm.utils import parameter_counts, seed_everything
 
 SHARD_RE = re.compile(r"^step_\d{6}\.seed_\d+\.json$")
 METRIC_KEYS = ("ppl", "h_gpt2", "h_dataset", "unique_frac", "pairwise_agree")
@@ -70,6 +70,10 @@ META_KEYS = (
     "total_positions_conservative",
     "n_samples",
     "n_seeds",
+    "n_params_tokenizer",
+    "n_params_backbone",
+    "n_params_head",
+    "n_params_total",
 )
 
 
@@ -270,6 +274,8 @@ def evaluate_checkpoint(
             raise ValueError(f"seed {seed} is outside 0..{int(n_seeds) - 1}")
 
     meta = _checkpoint_meta(cfg, state, Path(checkpoint), run_id)
+    # T5.5b F15: the eval table reports the same sizes as the first metric.
+    meta.update(parameter_counts(tokenizer=tokenizer, backbone=backbone, head=head))
     meta["n_samples"] = int(n_samples)
     meta["n_seeds"] = int(n_seeds)
 

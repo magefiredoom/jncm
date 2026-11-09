@@ -57,7 +57,7 @@ from jncm.train_tokenizer import (
     get_lr,
     setup_data,
 )
-from jncm.utils import JSONLLogger, seed_everything, write_done
+from jncm.utils import JSONLLogger, parameter_counts, seed_everything, write_done
 
 
 def validate_jepa_config(cfg: Config) -> None:
@@ -292,6 +292,8 @@ def train(
         if gen_train.save_milestones
         else {}
     )
+    counts = parameter_counts(tokenizer=tokenizer, backbone=backbone, head=head)
+    first_record = True
 
     sec_per_step = 0.0
     loop_start = time.time()
@@ -381,6 +383,10 @@ def train(
                 momentum=momentum,
                 generator=diag_generator,
             )
+            if first_record:
+                # T5.5b F15: the first record carries the three arms' sizes.
+                metrics.update(counts)
+                first_record = False
             logger.log(metrics)
             mean_r2 = sum(metrics["r2"]) / len(metrics["r2"])
             print(

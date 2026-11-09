@@ -174,6 +174,25 @@ def test_2x2_flag_combination_runs_50_steps(
     assert (state["ema"] is not None) is cfg.jepa.ema
 
 
+def test_first_metrics_record_logs_parameter_counts(tmp_path: Path) -> None:
+    """T5.5b F15: tokenizer, backbone, head and total counts on the first record."""
+    cfg = _cfg()
+    cfg.generator.train.save_milestones = False
+    run_dir, records = _run(tmp_path, cfg, steps=2)
+
+    tokenizer = MultiscaleTokenizer(cfg.tokenizer, L=cfg.L, V=cfg.V)
+    backbone, head = tj.build_generator(cfg, tokenizer)
+    expected = {
+        "n_params_tokenizer": sum(p.numel() for p in tokenizer.parameters()),
+        "n_params_backbone": sum(p.numel() for p in backbone.parameters()),
+        "n_params_head": sum(p.numel() for p in head.parameters()),
+    }
+    expected["n_params_total"] = sum(expected.values())
+    first = records[0]
+    assert {key: first[key] for key in expected} == expected
+    assert "n_params_total" not in records[-1]
+
+
 def test_grad_accum_uses_one_optimizer_step_per_full_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

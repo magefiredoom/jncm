@@ -151,6 +151,16 @@ def test_evaluate_checkpoint_reports_spec_61_metrics(tmp_path: Path) -> None:
     assert record["h_gpt2_mean"] >= 0.0
     assert 0.0 <= record["unique_frac_mean"] <= 1.0
     assert 0.0 <= record["pairwise_agree_mean"] <= 1.0
+    # T5.5b F15: eval aggregates carry the same parameter counts as training.
+    tokenizer, _ = load_tokenizer(tok_ckpt, cfg)
+    backbone, head = build_generator(cfg, tokenizer)
+    expected = {
+        "n_params_tokenizer": sum(p.numel() for p in tokenizer.parameters()),
+        "n_params_backbone": sum(p.numel() for p in backbone.parameters()),
+        "n_params_head": sum(p.numel() for p in head.parameters()),
+    }
+    expected["n_params_total"] = sum(expected.values())
+    assert {key: record[key] for key in expected} == expected
 
 
 def test_evaluate_checkpoint_rejects_a_different_generator(tmp_path: Path) -> None:

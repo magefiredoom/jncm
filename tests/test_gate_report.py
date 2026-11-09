@@ -33,6 +33,7 @@ def _write_run(root: Path, run_id: str, points: list[dict]) -> Path:
             "h_dataset_mean": point.get("h_dataset", 4.00),
             "unique_frac_mean": point.get("unique", 0.90),
             "pairwise_agree_mean": point.get("agree", 0.10),
+            "n_params_total": point.get("n_params", 123_400_000),
         }
         if point.get("conservative") is not None:
             record["total_positions_conservative"] = point["conservative"]
@@ -74,6 +75,7 @@ def test_table_has_one_row_per_milestone_and_judges_g0(
     assert "1.704" in out  # 18.40 / 10.80
     assert "-0.080" in out  # 3.95 - 4.03
     assert "999.90" not in out
+    assert "123.4M" in out
     assert "G0 step 100 (50%): PASS" in out
     assert "G0 step 200 (100%): FAIL" in out
     assert "G0: FAIL" in out

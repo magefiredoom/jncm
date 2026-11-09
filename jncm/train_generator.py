@@ -41,7 +41,7 @@ from jncm.train_tokenizer import (
     get_lr,
     setup_data,
 )
-from jncm.utils import JSONLLogger, seed_everything, write_done
+from jncm.utils import JSONLLogger, parameter_counts, seed_everything, write_done
 
 DecodeFn = Callable[[list[int]], str]
 
@@ -467,6 +467,8 @@ def train(
         if gen_train.save_milestones
         else {}
     )
+    counts = parameter_counts(tokenizer=tokenizer, backbone=backbone, head=head)
+    first_record = True
 
     recent_loss = 0.0
     recent_per_level = [0.0] * tokenizer.K
@@ -528,6 +530,10 @@ def train(
                 scorer=scorer,
                 samples_dir=samples_dir,
             )
+            if first_record:
+                # T5.5b F15: the first record carries the three arms' sizes.
+                metrics.update(counts)
+                first_record = False
             logger.log(metrics)
             line = (
                 f"Step {step + 1:5d} | Loss: {recent_loss:.4f} | "

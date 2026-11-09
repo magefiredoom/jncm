@@ -46,6 +46,7 @@ COLUMNS = [
     ("gate", 4, False),
     ("run", 26, False),
     ("milestone", 6, True),
+    ("n_params", 9, True),
     ("total_positions", 15, True),
     ("conservative", 14, True),
     ("Gen PPL", 16, True),
@@ -129,6 +130,8 @@ def curve(records: list[dict[str, Any]],
         for key in ("h_gpt2", "h_dataset", "unique_frac", "pairwise_agree"):
             value = record.get(f"{key}_mean")
             point[key] = None if value is None else float(value)
+        params = record.get("n_params_total")
+        point["n_params_total"] = None if params is None else int(params)
         points.append(point)
     points.sort(key=lambda point: point["x"])
     return points
@@ -174,6 +177,8 @@ def format_row(gate: str, run_id: str, point: dict[str, Any]) -> str:
         gate,
         run_id,
         milestone_label(point),
+        "n/a" if point["n_params_total"] is None
+        else f"{point['n_params_total'] / 1e6:.1f}M",
         str(point["total_positions"]),
         "-" if conservative is None else str(conservative),
         f"{point['ppl']:.2f} +/- {point['ppl_std']:.2f}",
