@@ -49,6 +49,8 @@ generator:
     max_steps: 200
     grad_clip: 1.0
     batch_size: 16
+    # T5.5a F13: equal micro-batches per optimizer step (losses are averaged).
+    grad_accum: 1
     eval_every: 50
     save_every: 100
     save_milestones: true

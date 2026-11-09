@@ -49,6 +49,7 @@ from jncm.train_generator import (
     build_optimizer,
     load_tokenizer,
     milestone_steps,
+    validate_grad_accum,
 )
 from jncm.train_tokenizer import (
     detect_data_source,
@@ -89,6 +90,9 @@ def validate_jepa_config(cfg: Config) -> None:
         raise ValueError(
             f"generator.train.batch_size must be >= 1, got {cfg.generator.train.batch_size}"
         )
+    validate_grad_accum(
+        cfg.generator.train.batch_size, cfg.generator.train.grad_accum
+    )
 
 
 def joint_named_parameters(
@@ -304,22 +308,54 @@ def train(
 
         x_batch = next(train_loader).to(device)
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(
-            device_type=device.type, dtype=amp_dtype, enabled=use_autocast
-        ):
-            joint = joint_loss(
-                cfg,
-                tokenizer,
-                backbone,
-                head,
-                x_batch,
-                target_tokenizer=None if target_encoder is None else target_encoder.module,
-                generator=rng,
+        loss_value = 0.0
+        dec_value = 0.0
+        pred_value = 0.0
+        vic_value = 0.0
+        per_level_value = [0.0] * tokenizer.K
+        last_joint: JointStep | None = None
+        for micro_batch in x_batch.chunk(gen_train.grad_accum):
+            with torch.autocast(
+                device_type=device.type, dtype=amp_dtype, enabled=use_autocast
+            ):
+                micro_joint = joint_loss(
+                    cfg,
+                    tokenizer,
+                    backbone,
+                    head,
+                    micro_batch,
+                    target_tokenizer=None if target_encoder is None else target_encoder.module,
+                    generator=rng,
+                )
+            (micro_joint.loss / gen_train.grad_accum).backward()
+            loss_value += float(micro_joint.loss.detach()) / gen_train.grad_accum
+            dec_value += float(micro_joint.loss_dec.detach()) / gen_train.grad_accum
+            pred_value += (
+                float(micro_joint.loss_pred.detach()) / gen_train.grad_accum
             )
-        joint.loss.backward()
+            vic_value += float(micro_joint.loss_vic.detach()) / gen_train.grad_accum
+            for index, value in enumerate(micro_joint.per_level_pred):
+                per_level_value[index] += (
+                    float(value.detach()) / gen_train.grad_accum
+                )
+            last_joint = micro_joint
         if gen_train.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(parameters, gen_train.grad_clip)
         optimizer.step()
+
+        assert last_joint is not None
+        joint = JointStep(
+            loss=torch.tensor(loss_value),
+            loss_dec=torch.tensor(dec_value),
+            loss_pred=torch.tensor(pred_value),
+            loss_vic=torch.tensor(vic_value),
+            per_level_pred=[torch.tensor(value) for value in per_level_value],
+            codes=last_joint.codes,
+            targets=last_joint.targets,
+            hidden=last_joint.hidden,
+            predictions=last_joint.predictions,
+            cut=last_joint.cut,
+        )
 
         momentum = target_encoder.update(tokenizer, step) if target_encoder else None
 

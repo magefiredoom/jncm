@@ -68,6 +68,21 @@ def test_jepa_smoke_is_cpu_scale_and_valid() -> None:
     _field_equalities(cfg.generator, smoke.generator, GENERATOR_SIZES)
 
 
+def test_grad_accum_is_present_and_documents_per_micro_batch_vicreg() -> None:
+    """T5.5a F13: default 1 in every config, VICReg caveat in the JEPA ones."""
+    for path in (
+        "configs/smoke.yaml",
+        "configs/tinystories_dev.yaml",
+        "configs/jepa_smoke.yaml",
+        "configs/jepa_dev.yaml",
+    ):
+        cfg = load_config(Path(path))
+        assert cfg.generator.train.grad_accum == 1, path
+        assert "grad_accum: 1" in Path(path).read_text(encoding="utf-8"), path
+    for path in ("configs/jepa_smoke.yaml", "configs/jepa_dev.yaml"):
+        assert "per micro-batch" in Path(path).read_text(encoding="utf-8"), path
+
+
 def test_both_configs_document_the_head_restriction() -> None:
     for path in ("configs/jepa_dev.yaml", "configs/jepa_smoke.yaml"):
         text = Path(path).read_text(encoding="utf-8")

@@ -49,6 +49,10 @@ class GeneratorTrainConfig:
     max_steps: int = 10000
     grad_clip: float = 1.0
     batch_size: int = 1024
+    # T5.5a F13: split each batch into this many equal micro-batches, average
+    # the losses, then take one optimizer step. VICReg statistics are computed
+    # per micro-batch when this is > 1.
+    grad_accum: int = 1
     eval_every: int = 500
     save_every: int = 5000
     save_milestones: bool = True

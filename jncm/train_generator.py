@@ -154,6 +154,23 @@ def build_optimizer(
     return torch.optim.AdamW(groups, lr=lr, betas=tuple(betas))
 
 
+def validate_grad_accum(batch_size: int, grad_accum: int) -> None:
+    """Require equal, non-empty micro-batches (T5.5a F13).
+
+    Averaging micro-batch losses equals the full-batch loss only when every
+    micro-batch has the same number of sequences.
+    """
+    if grad_accum < 1:
+        raise ValueError(
+            f"generator.train.grad_accum must be >= 1, got {grad_accum}"
+        )
+    if batch_size % grad_accum != 0:
+        raise ValueError(
+            f"generator.train.batch_size ({batch_size}) must be divisible by "
+            f"grad_accum ({grad_accum})"
+        )
+
+
 def compute_generator_loss(
     tokenizer: MultiscaleTokenizer,
     backbone: GeneratorBackbone,
@@ -370,6 +387,7 @@ def train(
     """
     seed_everything(cfg.seed)
     gen_train = cfg.generator.train
+    validate_grad_accum(gen_train.batch_size, gen_train.grad_accum)
     if max_steps is not None:
         gen_train.max_steps = max_steps
 
@@ -467,19 +485,27 @@ def train(
 
         x_batch = next(train_loader).to(device)
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(
-            device_type=device.type, dtype=amp_dtype, enabled=use_autocast
-        ):
-            loss, per_level = compute_generator_loss(
-                tokenizer, backbone, head, x_batch, cfg, generator=rng
-            )
-        loss.backward()
+        loss_value = 0.0
+        per_level_value = [0.0] * tokenizer.K
+        for micro_batch in x_batch.chunk(gen_train.grad_accum):
+            with torch.autocast(
+                device_type=device.type, dtype=amp_dtype, enabled=use_autocast
+            ):
+                micro_loss, micro_per_level = compute_generator_loss(
+                    tokenizer, backbone, head, micro_batch, cfg, generator=rng
+                )
+            (micro_loss / gen_train.grad_accum).backward()
+            loss_value += float(micro_loss.detach()) / gen_train.grad_accum
+            for index, value in enumerate(micro_per_level):
+                per_level_value[index] += (
+                    float(value.detach()) / gen_train.grad_accum
+                )
         if gen_train.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(params, gen_train.grad_clip)
         optimizer.step()
 
-        recent_loss = float(loss.detach())
-        recent_per_level = [float(value.detach()) for value in per_level]
+        recent_loss = loss_value
+        recent_per_level = per_level_value
         gen_positions = (step + 1) * gen_train.batch_size * cfg.L
         sec_per_step = (time.time() - loop_start) / float(step + 1 - start_step)
 

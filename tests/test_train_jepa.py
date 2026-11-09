@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import torch
 
+import jncm.train_jepa as tj
 from jncm.config import Config, load_config
 from jncm.tokenizer import MultiscaleTokenizer
 from jncm.train_jepa import train, validate_jepa_config
@@ -171,6 +172,57 @@ def test_2x2_flag_combination_runs_50_steps(
     assert state["joint_positions"] == per_step
     assert state["total_positions_conservative"] == 2 * per_step
     assert (state["ema"] is not None) is cfg.jepa.ema
+
+
+def test_grad_accum_uses_one_optimizer_step_per_full_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T5.5a F13: 2 micro-batches, one step, full-batch position accounting."""
+    cfg = _cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.grad_accum = 2
+    cfg.generator.train.eval_every = 1
+    cfg.generator.train.save_every = 100
+    cfg.generator.train.save_milestones = False
+
+    calls = {"count": 0}
+    real_joint_loss = tj.joint_loss
+
+    def counting_joint_loss(*args, **kwargs):
+        calls["count"] += 1
+        return real_joint_loss(*args, **kwargs)
+
+    monkeypatch.setattr(tj, "joint_loss", counting_joint_loss)
+    real_step = torch.optim.AdamW.step
+    steps = {"count": 0}
+
+    def spy(optimizer, *args, **kwargs):
+        steps["count"] += 1
+        return real_step(optimizer, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.AdamW, "step", spy)
+    _, records = _run(tmp_path, cfg, steps=2)
+
+    assert calls["count"] == 4
+    assert steps["count"] == 2
+    per_step = cfg.generator.train.batch_size * cfg.L
+    assert [record["joint_positions"] for record in records] == [
+        per_step,
+        2 * per_step,
+    ]
+    assert all(record["sec_per_step"] > 0.0 for record in records)
+
+
+def test_validate_jepa_config_rejects_bad_grad_accum() -> None:
+    """T5.5a F13: micro-batches must be equal and at least one."""
+    cfg = _cfg()
+    cfg.generator.train.grad_accum = 0
+    with pytest.raises(ValueError, match="grad_accum"):
+        validate_jepa_config(cfg)
+
+    cfg.generator.train.grad_accum = 3  # batch 4 is not divisible by 3
+    with pytest.raises(ValueError, match="divisible"):
+        validate_jepa_config(cfg)
 
 
 def test_joint_position_accounting(tmp_path: Path) -> None:

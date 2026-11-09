@@ -29,13 +29,14 @@ import numpy as np
 import pytest
 import torch
 
-from jncm.config import Config, load_config
+from jncm.config import Config, GeneratorTrainConfig, load_config
 from jncm.generator import (
     GeneratorBackbone,
     LevelHead,
     corrupt_codes,
     weighted_total,
 )
+import jncm.train_generator as tg
 from jncm.tokenizer import MultiscaleTokenizer
 from jncm.train_generator import (
     build_generator,
@@ -243,6 +244,132 @@ def test_one_staged_step_gives_every_generator_parameter_a_gradient(
         if param.grad is None
     ]
     assert not missing, f"parameters without a gradient: {missing}"
+
+
+def test_grad_accum_defaults_to_one() -> None:
+    """T5.5a F13: accumulation is opt-in."""
+    assert GeneratorTrainConfig().grad_accum == 1
+
+
+def test_grad_accum_matches_full_batch_gradients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T5.5a F13: 4 equal micro-batches average to the full-batch gradient."""
+    cfg = _smoke_cfg("ce", "vq")
+    cfg.generator.train.batch_size = 8
+    cfg.generator.train.warmup_steps = 0
+    cfg.generator.train.grad_clip = 0.0
+    cfg.generator.train.eval_every = 100
+    cfg.generator.train.save_every = 100
+    cfg.generator.train.save_milestones = False
+    cfg.eval.n_samples = 1
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    seed_everything(123)
+    data_dir = _write_data(
+        tmp_path / "data", torch.randint(0, cfg.V, (8, cfg.L))
+    )
+
+    calls = {"count": 0}
+    real_loss_fn = tg.compute_generator_loss
+
+    def counting_loss(*args, **kwargs):
+        calls["count"] += 1
+        return real_loss_fn(*args, **kwargs)
+
+    monkeypatch.setattr(tg, "compute_generator_loss", counting_loss)
+    real_step = torch.optim.AdamW.step
+    captured: dict[int, list[torch.Tensor]] = {}
+    micro_calls: dict[int, int] = {}
+
+    def run(accum: int) -> None:
+        grads: list[torch.Tensor] = []
+        calls["count"] = 0
+
+        def spy(optimizer, *args, **kwargs):
+            if not grads:
+                grads.extend(
+                    param.grad.detach().clone()
+                    for group in optimizer.param_groups
+                    for param in group["params"]
+                    if param.grad is not None
+                )
+            return real_step(optimizer, *args, **kwargs)
+
+        monkeypatch.setattr(torch.optim.AdamW, "step", spy)
+        cfg.generator.train.grad_accum = accum
+        train(
+            cfg,
+            ckpt,
+            max_steps=1,
+            run_id=f"accum{accum}",
+            results_dir=tmp_path / f"res{accum}",
+            data_dir=data_dir,
+        )
+        captured[accum] = grads
+        micro_calls[accum] = calls["count"]
+
+    run(1)
+    run(4)
+
+    assert micro_calls == {1: 1, 4: 4}
+    full, accum = captured[1], captured[4]
+    assert len(full) == len(accum)
+    max_diff = max(
+        float((left - right).abs().max()) for left, right in zip(full, accum)
+    )
+    assert max_diff <= 1e-5, f"max gradient difference {max_diff}"
+
+
+def test_train_rejects_unequal_micro_batches(tmp_path: Path) -> None:
+    """T5.5a F13: equal micro-batches are required for loss averaging."""
+    cfg = _smoke_cfg()
+    cfg.generator.train.grad_accum = 3  # batch 16 is not divisible by 3
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(
+        tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L))
+    )
+    with pytest.raises(ValueError, match="divisible"):
+        train(
+            cfg,
+            ckpt,
+            max_steps=1,
+            run_id="bad_accum",
+            results_dir=tmp_path / "results",
+            data_dir=data_dir,
+        )
+
+
+def test_grad_accum_position_accounting_uses_full_batch(tmp_path: Path) -> None:
+    """T5.5a F13: one optimizer step still charges the whole batch."""
+    cfg = _smoke_cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.grad_accum = 2
+    cfg.generator.train.warmup_steps = 0
+    cfg.generator.train.eval_every = 1
+    cfg.generator.train.save_every = 10
+    cfg.generator.train.save_milestones = False
+    cfg.eval.n_samples = 1
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(
+        tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L))
+    )
+
+    run_dir = train(
+        cfg,
+        ckpt,
+        max_steps=2,
+        run_id="accum_accounting",
+        results_dir=tmp_path / "results",
+        data_dir=data_dir,
+    )
+
+    records = JSONLLogger(run_dir / "metrics.jsonl").read_all()
+    assert [record["step"] for record in records] == [1, 2]
+    assert [record["gen_positions"] for record in records] == [
+        4 * cfg.L,
+        2 * 4 * cfg.L,
+    ]
+    assert all(record["sec_per_step"] > 0.0 for record in records)
 
 
 def test_train_writes_metrics_and_position_accounting(tmp_path: Path) -> None:
