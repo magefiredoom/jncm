@@ -35,6 +35,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Decisions (user, 2026-11-10): keep `configs/tinystories_dev.yaml`, add `generator.train.grad_accum=16` as a second `SETS` entry (effective batch stays 1024), and measure the wall clock with `pilot_gen_vq_ce` first.
 - Timing pilot: `sbatch` job **3234940** (`jncm_gen`, 100 steps, `SETS=generator.train.grad_accum=16`, `GEN_PPL=0` because no GPT-2, `--time=0:20:00`) submitted 2026-11-10; first poll `PD (Priority)`, 1 CPU, `gres/gpu:h`, no output file yet. `GEN_PPL=0` does not affect per-step timing here: `generator.train.eval_every=500` is above the 100-step pilot, so no scoring hook runs; the 1.3x factor is meant to cover the full run's evals.
 - Slurm quirk found: on this cluster a command-line `--time=0:20:00` does **not** override the template's invalid `#SBATCH --time=HH:MM:SS` header (`sbatch: error: Invalid --time specification`, reproduced with `--test-only` and with `-t`). A `--wrap` job with the same `-t` parses fine. Workaround used: `sed -e s/HH:MM:SS/0:20:00/ scripts/slurm/gen.sbatch > results/.gen_pilot.sbatch` and submit that copy (git-ignored, repo config untouched). The same workaround is needed for the three real runs with their computed wall clock.
+- FIR venv packages for Gen PPL: `source .venv/bin/activate && pip install --no-index transformers` -> `Successfully installed ... transformers-5.22.1+computecanada ... tokenizers-0.23.2+computecanada ... safetensors-0.8.0+computecanada ... huggingface-hub-1.33.0+computecanada` (all from the CVMFS wheelhouse, about 4 min). `transformers`, `tokenizers`, `safetensors` and `huggingface_hub` were absent before this; the pilot's `GEN_PPL=0` path does not need them, but the three `GEN_PPL=1` runs do.
 
 ### FIR channel, sync check and tokenizer poll — 2026-11-09 (zellij `attach`, pane `terminal_0`)
 - Channel proof: `hostname -f; echo ZNCM-1109-QP4; whoami` -> `login1.int.fir.alliancecan.ca` / `ZNCM-1109-QP4` / `aefad`.
@@ -523,6 +524,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 
 ## Environment
 - Python / torch: Python 3.13.7, torch 2.15.0+cpu (CUDA unavailable on this host); numpy 2.5.4, pytest 9.2.0.
+- FIR venv (2026-11-10): torch/numpy/pyyaml as before, plus `transformers 5.22.1+computecanada`, `tokenizers 0.23.2+computecanada`, `safetensors 0.8.0+computecanada` and `huggingface-hub 1.33.0+computecanada` installed with `pip install --no-index` from `/cvmfs/soft.computecanada.ca/custom/python/wheelhouse/`. Needed for `--gen_ppl` and `run_eval.py`.
 - Recreate on Windows (PowerShell), from repo root:
   ```powershell
   python -m venv .venv
