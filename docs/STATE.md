@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-10 (F16 corruption-sweep preflight: code sync verified at 252fb3b on both sides and ~/jncm_git got `.venv`/`results` symlinks, but the three runs are BLOCKED — no `models/gpt2-large` anywhere on FIR (`GPT2_LARGE_PATH` unset) and no generator pilot `sec_per_step` to size `--time`; dev batch 1024 + `grad_accum: 1` also risks the F13 OOM. Nothing was submitted)
+Last updated: 2026-11-10 (F16 corruption-sweep preflight: code sync verified at 252fb3b on both sides and ~/jncm_git got `.venv`/`results` symlinks; a 100-step `pilot_gen_vq_ce` with `grad_accum=16` is queued as job 3234940. The three `corr_p*` runs still cannot start: `models/gpt2-large` is absent on FIR (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -32,6 +32,9 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Blocker A (Gen PPL): `ls -ld ~/jncm/models ~/jncm/models/gpt2-large` -> both `No such file or directory`; `echo P=$GPT2_LARGE_PATH` -> `P=`; `find /scratch/aefad /project/def-cheng23 -maxdepth 4 -iname "*gpt2*"` -> no output. `train_generator.py` builds `GPT2Scorer` at startup when `--gen_ppl` is passed (lines 651-657), so a `GEN_PPL=1` job fails before training.
 - Blocker B (wall clock): no `pilot_gen_*` directory exists (`find /home/aefad -maxdepth 4 -type d -name "pilot_gen*"` -> no output) and `sacct -S 2026-11-01` lists no `jncm_gen`/`jncm_eval` job. No generator has run on FIR, so there is no pilot `sec_per_step` for `1.3 * sec_per_step * 2000`.
 - Blocker C (memory risk, not measured): `configs/tinystories_dev.yaml` has `batch_size: 1024` and `grad_accum: 1`; the backbone packs `[B*K, L, H]` = 12,288 x 128 tokens through 12 x 768 layers, which is the F13 case estimated at about 490 GB of activations on an 80 GB H100. A 2,000-step dev run with only the `p_first` overrides would most likely OOM.
+- Decisions (user, 2026-11-10): keep `configs/tinystories_dev.yaml`, add `generator.train.grad_accum=16` as a second `SETS` entry (effective batch stays 1024), and measure the wall clock with `pilot_gen_vq_ce` first.
+- Timing pilot: `sbatch` job **3234940** (`jncm_gen`, 100 steps, `SETS=generator.train.grad_accum=16`, `GEN_PPL=0` because no GPT-2, `--time=0:20:00`) submitted 2026-11-10; first poll `PD (Priority)`, 1 CPU, `gres/gpu:h`, no output file yet. `GEN_PPL=0` does not affect per-step timing here: `generator.train.eval_every=500` is above the 100-step pilot, so no scoring hook runs; the 1.3x factor is meant to cover the full run's evals.
+- Slurm quirk found: on this cluster a command-line `--time=0:20:00` does **not** override the template's invalid `#SBATCH --time=HH:MM:SS` header (`sbatch: error: Invalid --time specification`, reproduced with `--test-only` and with `-t`). A `--wrap` job with the same `-t` parses fine. Workaround used: `sed -e s/HH:MM:SS/0:20:00/ scripts/slurm/gen.sbatch > results/.gen_pilot.sbatch` and submit that copy (git-ignored, repo config untouched). The same workaround is needed for the three real runs with their computed wall clock.
 
 ### FIR channel, sync check and tokenizer poll — 2026-11-09 (zellij `attach`, pane `terminal_0`)
 - Channel proof: `hostname -f; echo ZNCM-1109-QP4; whoami` -> `login1.int.fir.alliancecan.ca` / `ZNCM-1109-QP4` / `aefad`.
@@ -492,8 +495,8 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 ## Human must fill / do
 - **F16 sweep (2026-11-10) — the three `corr_p*` runs cannot be submitted yet:**
   1. Copy GPT-2-large to FIR (MFA; local dir is 2.89 GB): `rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/`, then on FIR `export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large` and `ln -s ~/jncm/models ~/jncm_git/models`. Without it `GEN_PPL=1` and the post-run eval cannot score.
-  2. Provide the generator pilot speed, or authorize `pilot_gen_vq_ce` (300 steps, `GEN_PPL=1`, `--time=00:20:00`): `SETS`/`CONFIG` must match the sweep so its `sec_per_step` is usable in `--time = ceil(1.3 * sec_per_step * 2000)`.
-  3. Decide the micro-batch: the dev config's batch 1024 with `grad_accum: 1` is the F13 OOM case. Either approve `generator.train.grad_accum=16` (keeps the effective batch at 1024) as an extra `SETS` entry, or move the sweep to `configs/tinystories_lite.yaml`.
+  2. `pilot_gen_vq_ce` is queued as job 3234940 (100 steps, dev config, `grad_accum=16`, `GEN_PPL=0`). Its last record gives `sec_per_step`; the three `--time` values follow `ceil(1.3 * sec_per_step * 2000)`. No action unless the job dies.
+  3. Micro-batch decided: dev config plus `generator.train.grad_accum=16` in `SETS` (effective batch stays 1024).
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
 - Before G0a/G0: sync the FIR tree from the private remote and copy `data/tinystories/` + `models/gpt2-large/` (`RUNBOOK.md` §1.1/§1.2; every ssh/rsync asks for MFA).
 - **BLOCKED 2026-11-09 — only the human can do this (agents must never type credentials).** On FIR, in the zellij pane:
