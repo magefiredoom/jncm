@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-09 (FIR sync + pilot session: 2880034 tok_vq_10k COMPLETED and passes the vq threshold; 2880035 still PENDING; sync BLOCKED — no ~/jncm_git clone and no models/ on FIR; nothing dry-run or submitted)
+Last updated: 2026-11-10 (F16 corruption-sweep preflight: code sync verified at 252fb3b on both sides and ~/jncm_git got `.venv`/`results` symlinks, but the three runs are BLOCKED — no `models/gpt2-large` anywhere on FIR (`GPT2_LARGE_PATH` unset) and no generator pilot `sec_per_step` to size `--time`; dev batch 1024 + `grad_accum: 1` also risks the F13 OOM. Nothing was submitted)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -23,6 +23,15 @@ Rule: newest information wins. Rewrite sections; do not append history.
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. **No `DONE` file exists for 2880034** because the FIR `~/jncm` tree predates T4.5 (`grep -c write_done jncm/utils.py` -> `0`); completion is established by `sacct` plus the final metrics record at `step 10000`, and that record is the config budget, so the run owes nothing. Wall clock per step (startup included): `02:21:20 / 10,000` = 0.85 s/step; use a real pilot record, not this number, to size a chain. No job was submitted or polled further this session; the sync blocker below stopped the pilot work.
 
 ## VERIFIED (command + last lines of output)
+
+### F16 sweep preflight: FIR sync and environment — 2026-11-10 (zellij `attach`, pane `terminal_0`, login3)
+- Local HEAD, `origin/main` and FIR HEAD are identical: local `git rev-parse HEAD origin/main` -> `252fb3b8c6bda7cc5b2620853c8b2f09e2e92084` for both; FIR `cd ~/jncm_git && GIT_TERMINAL_PROMPT=0 git pull --ff-only && git rev-parse HEAD` -> `Already up to date.` / `252fb3b8c6bda7cc5b2620853c8b2f09e2e92084`. Nothing to push; the pull was a no-op. FIR `git status --short` shows only `?? data` (the pre-existing data symlink).
+- `~/jncm_git` now has `.venv -> /home/aefad/jncm/.venv` and `results -> /home/aefad/jncm/results` (created this session; `.gitignore` covers both). `data -> /home/aefad/jncm/data` already existed.
+- `results/tok_vq_10k/ckpt/latest.pt` exists (130,920,073 bytes) next to `step_005000.pt`/`step_010000.pt`; the final metrics record is `step 10000`, `data_source real`, `acc_full 0.9999847` — the run is complete even though the old tar tree writes no `DONE` file.
+- Corruption keys: `jncm/config.py` has `p_first: float = 0.8` and `p_last: float = 0.2` under `CorruptionConfig` (`generator.corrupt.*`); the dev and lite YAMLs both set `mode: "swap"`, `p_first: 0.8`, `p_last: 0.2`, `s_first: 0.5`, `s_last: 0.1`.
+- Blocker A (Gen PPL): `ls -ld ~/jncm/models ~/jncm/models/gpt2-large` -> both `No such file or directory`; `echo P=$GPT2_LARGE_PATH` -> `P=`; `find /scratch/aefad /project/def-cheng23 -maxdepth 4 -iname "*gpt2*"` -> no output. `train_generator.py` builds `GPT2Scorer` at startup when `--gen_ppl` is passed (lines 651-657), so a `GEN_PPL=1` job fails before training.
+- Blocker B (wall clock): no `pilot_gen_*` directory exists (`find /home/aefad -maxdepth 4 -type d -name "pilot_gen*"` -> no output) and `sacct -S 2026-11-01` lists no `jncm_gen`/`jncm_eval` job. No generator has run on FIR, so there is no pilot `sec_per_step` for `1.3 * sec_per_step * 2000`.
+- Blocker C (memory risk, not measured): `configs/tinystories_dev.yaml` has `batch_size: 1024` and `grad_accum: 1`; the backbone packs `[B*K, L, H]` = 12,288 x 128 tokens through 12 x 768 layers, which is the F13 case estimated at about 490 GB of activations on an 80 GB H100. A 2,000-step dev run with only the `p_first` overrides would most likely OOM.
 
 ### FIR channel, sync check and tokenizer poll — 2026-11-09 (zellij `attach`, pane `terminal_0`)
 - Channel proof: `hostname -f; echo ZNCM-1109-QP4; whoami` -> `login1.int.fir.alliancecan.ca` / `ZNCM-1109-QP4` / `aefad`.
@@ -481,6 +490,10 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - `jepa.enabled` is not consulted by `jncm.train_jepa`; the entry point itself selects joint mode (Q13). The four SPEC 8 ablation flags (`jepa.ema`, `jepa.vicreg`, `jepa.decoder_through_E`, `generator.head`) plus `jepa.target_chain` are all consumed and tested.
 
 ## Human must fill / do
+- **F16 sweep (2026-11-10) — the three `corr_p*` runs cannot be submitted yet:**
+  1. Copy GPT-2-large to FIR (MFA; local dir is 2.89 GB): `rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/`, then on FIR `export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large` and `ln -s ~/jncm/models ~/jncm_git/models`. Without it `GEN_PPL=1` and the post-run eval cannot score.
+  2. Provide the generator pilot speed, or authorize `pilot_gen_vq_ce` (300 steps, `GEN_PPL=1`, `--time=00:20:00`): `SETS`/`CONFIG` must match the sweep so its `sec_per_step` is usable in `--time = ceil(1.3 * sec_per_step * 2000)`.
+  3. Decide the micro-batch: the dev config's batch 1024 with `grad_accum: 1` is the F13 OOM case. Either approve `generator.train.grad_accum=16` (keeps the effective batch at 1024) as an extra `SETS` entry, or move the sweep to `configs/tinystories_lite.yaml`.
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
 - Before G0a/G0: sync the FIR tree from the private remote and copy `data/tinystories/` + `models/gpt2-large/` (`RUNBOOK.md` §1.1/§1.2; every ssh/rsync asks for MFA).
 - **BLOCKED 2026-11-09 — only the human can do this (agents must never type credentials).** On FIR, in the zellij pane:
@@ -526,7 +539,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Human: run the `~/jncm_git` clone + models symlink block in "Human must fill / do" (that is the current blocker). Then the next agent session re-runs the sync, polls 2880035, dry-runs the g0/g1/g2 pilots for the dev and lite configs, and submits only after your "go". `tok_vq_10k` already passes G0a for vq.
+1. Human: copy `models/gpt2-large` to FIR and choose the F16 micro-batch / pilot path in "Human must fill / do" (those are the current blockers). The `~/jncm_git` tree is synced at `252fb3b` and now has `.venv`/`results` symlinks. Then the F16 sweep can be submitted: three `gen.sbatch` runs, `HEAD=ce`, `CONFIG=configs/tinystories_dev.yaml`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `STEPS=2000`, `GEN_PPL=1`, `RUN_ID=corr_p080|corr_p050|corr_p030`, `SETS="generator.corrupt.p_first=0.8|0.5|0.3"`, with `--time` from the pilot. `tok_vq_10k` already passes G0a for vq.
 2. Human: G0 with `HEAD=ce`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `RUN_ID=gen_vq_ce_dev`, then `eval.sbatch`/`--merge`/`plot_curves.py` (`RUNBOOK.md` §2.2).
 3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4. T5.3 is done; the next agent task is T5.4 (ablation configs and runbook section).
 
