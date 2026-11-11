@@ -1,11 +1,11 @@
 # STATE — jncm
 
-Last updated: 2026-11-11 (T5.5 trainer review fixes F11–F15/F17 re-verified at HEAD on CPU: targeted 13 passed, 1 skipped, full non-slow suite 276 passed, 1 skipped; the code and tests were already committed, so no new code change was needed. F16 corruption sweep remains blocked on FIR: `models/gpt2-large` is absent (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup)
+Last updated: 2026-11-11 (T5.5c done: lite launch kit — `--config` gives every run id a config-stem suffix so dev and lite never share a run id or a `DONE` file, `budget.py` filters pilots by the same suffix — plus `scripts/plot_tokenizer_levels.py` (Figure C) and `RUNBOOK.md` §0.3. Everything ran on CPU only; nothing was submitted. F16 corruption sweep remains blocked on FIR: `models/gpt2-large` is absent there (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
 ## Current position
-- Milestone / task in progress: M0–M4 complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1–T4.5); **T5.1 (EMA)**, **T5.2 (VICReg)**, **T5.3 (JEPA joint trainer)**, **T5.3b (target chain + joint accounting)**, **T5.4 (JEPA configs, `jepa.sbatch`, joint-checkpoint eval, Phase 2 runbook)**, **T5.5a (review fixes F11–F13)** and **T5.5b (review fixes F14/F15/F17, lite configs, CONFIG/--config, gen.sbatch SETS)** complete and ticked. F16 stays a documented risk, not a code change. Next work is the human's gates G0a/G0/G1/G2 on FIR (do not start M6). T4.5 added the launch kit: pilots first, then chunked full runs.
+- Milestone / task in progress: M0–M4 complete (T0.2, T1.2, T2.4, T3.1–T3.5, T4.1–T4.5); **T5.1 (EMA)**, **T5.2 (VICReg)**, **T5.3 (JEPA joint trainer)**, **T5.3b (target chain + joint accounting)**, **T5.4 (JEPA configs, `jepa.sbatch`, joint-checkpoint eval, Phase 2 runbook)**, **T5.5a (review fixes F11–F13)** and **T5.5b (review fixes F14/F15/F17, lite configs, CONFIG/--config, gen.sbatch SETS)** and **T5.5c (lite launch kit: run-id suffix rule in `launch_phase.sh`/`budget.py`, Figure C, `RUNBOOK.md` §0.3)** complete and ticked. F16 stays a documented risk, not a code change. Next work is the human's gates G0a/G0/G1/G2 on FIR (do not start M6). T4.5 added the launch kit: pilots first, then chunked full runs.
 - Last completed tasks: T5.5b (10% milestone grid without Adam state in milestone files, parameter counts in the first metrics record and the gate table, frozen tokenizer outside bf16 autocast, lite configs + optional `CONFIG`/`--config`, `SETS` in `gen.sbatch`); before that T5.5a (F11 shared level-input path with a trainable `input_embed`, F12 device-aware `sample_cutoff`, F13 `generator.train.grad_accum` in both trainers), T4.5 (`DONE` + `sec_per_step` in all three trainers and templates, `scripts/slurm/chain.sh`, `scripts/launch_phase.sh`, `scripts/budget.py`, `RUNBOOK.md` §0 "Pilots first"), T4.4 (`scripts/gate_report.py` G0/G1/G2 table with interpolation, `eval.sbatch` without a required `TOKENIZER`, `RUNBOOK.md` §3B), T5.4 (`configs/jepa_dev.yaml`, `configs/jepa_smoke.yaml`, `scripts/slurm/jepa.sbatch`, JEPA milestone checkpoints in `jncm/train_jepa.py`, joint checkpoints in `scripts/run_eval.py`, `--x` in `scripts/plot_curves.py`, `RUNBOOK.md` §3A). T3.5 acceptance still passes as written in TASKS.md.
 - All five Slurm templates now exist (`prep`, `tok`, `gen`, `eval`, `jepa`); `eval.sbatch` evaluates milestone checkpoints with one array task per seed (joint JEPA checkpoints included), `jepa.sbatch` and `gen.sbatch` run arms from `SETS`, and all four training/eval templates accept an optional `CONFIG`.
 - T5.5b milestone checkpoints: the dev configs write `ckpt/milestone_<pct>.pt` every 10% (`[0.1, ..., 1.0]`), `smoke` configs keep 10/25/50/100%, milestone files omit Adam state, and `run_eval.py` evaluates exactly those by default.
@@ -23,6 +23,33 @@ Rule: newest information wins. Rewrite sections; do not append history.
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. **No `DONE` file exists for 2880034** because the FIR `~/jncm` tree predates T4.5 (`grep -c write_done jncm/utils.py` -> `0`); completion is established by `sacct` plus the final metrics record at `step 10000`, and that record is the config budget, so the run owes nothing. Wall clock per step (startup included): `02:21:20 / 10,000` = 0.85 s/step; use a real pilot record, not this number, to size a chain. No job was submitted or polled further this session; the sync blocker below stopped the pilot work.
 
 ## VERIFIED (command + last lines of output)
+
+### T5.5c lite launch kit + Figure C — VERIFIED 2026-11-11
+- `bash -n` on `scripts/slurm/{prep,tok,gen,eval,jepa}.sbatch`, `scripts/slurm/chain.sh` and `scripts/launch_phase.sh` (Git bash first on PATH): `exit=0` for all seven.
+- Configs: `diff configs/tinystories_dev.yaml configs/tinystories_lite.yaml` differs only in the header comment and `generator.H 768 -> 512`, `n_layers 12 -> 8`, `n_heads 12 -> 8`, `generator.train.batch_size 1024 -> 256`; `jepa_dev.yaml` vs `jepa_lite.yaml` the same. Both lite files keep the 10% milestone grid and `grad_accum`.
+- Focused: `.venv/Scripts/python.exe -m pytest -q tests/test_plot_tokenizer_levels.py tests/test_budget.py tests/test_launch_phase.py tests/test_sbatch_config.py tests/test_config.py tests/test_jepa_configs.py` -> `62 passed in 17.83s` (EXIT=0). Full non-slow suite: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `292 passed, 1 skipped, 4 deselected in 65.16s` (EXIT=0); the skip is the CUDA-only `sample_cutoff` test.
+- Run-id rule (`scripts/launch_phase.sh`): `SUFFIX` comes from `--config` (empty for `*_dev`, `tinystories_lite`/`jepa_lite` -> `lite`); `rid()` replaces a trailing `_dev` or appends `_<stem>`; `base_id()` recovers the dev-shaped id for the pilot lookup. Dry runs give exactly the expected id sets for g0/g1/g2 under both configs (`pilot_tok_vq_lite`, `pilot_gen_vq_ce_lite`, `pilot_jepa_base_lite`, ...), and `g0 full --config configs/tinystories_lite.yaml` sizes its chunks from `pilot_tok_vq_lite`/`pilot_gen_vq_ce_lite` and exports `TOKENIZER=results/tok_vq_10k_lite/ckpt/latest.pt`. One bug of mine was caught by these tests: `run_g2` used the unsuffixed `pilot_tok_noisy`/`tok_noisy_10k` tokenizer path; fixed before the final run.
+- `scripts/budget.py --config configs/tinystories_lite.yaml`: prints `run-id suffix: _lite`, projects `gen_vq_ce_lite`, `tok_vq_10k_lite`, ... from `_lite` pilot records only; with only dev pilots present every lite run is `MISSING` (`TOTAL: 0.00 H100-hours over 0 run(s)`), never a dev number. `test_accepts_and_prints_the_config` (T5.5b) was updated to seed suffixed pilots, since the projection it asserts now reads lite records by design.
+- Figure C: `python scripts/plot_tokenizer_levels.py` -> `wrote figures\fig_c_tokenizers.png`, `records: tok_vq_10k step 10000, tok_noisy_10k step 10000`, PNG 111,608 bytes, EXIT 0. Real numbers (last `acc_full` record of each run):
+
+| level | vq acc_cum | noisy acc_cum | vq codebook_usage | noisy eff_rank | noisy eff_rank/7 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0.0776 | 0.0775 | 0.1042 | 6.1512 | 0.8787 |
+| 2 | 0.1442 | 0.1083 | 0.7297 | 6.9560 | 0.9937 |
+| 3 | 0.2911 | 0.2176 | 0.8491 | 6.9581 | 0.9940 |
+| 4 | 0.6144 | 0.4105 | 0.8811 | 6.9087 | 0.9870 |
+| 5 | 0.7533 | 0.6157 | 0.8850 | 6.9700 | 0.9957 |
+| 6 | 0.8854 | 0.7797 | 0.9192 | 6.9772 | 0.9967 |
+| 7 | 0.9370 | 0.8876 | 0.9231 | 6.9873 | 0.9982 |
+| 8 | 0.9715 | 0.9504 | 0.9365 | 6.9791 | 0.9970 |
+| 9 | 0.9856 | 0.9776 | 0.9700 | 6.9793 | 0.9970 |
+| 10 | 0.9929 | 0.9898 | 0.9915 | 6.9524 | 0.9932 |
+| 11 | 0.9945 | 0.9948 | 0.7886 | 6.9532 | 0.9933 |
+| 12 | 1.0000 | 0.9999 | 0.5708 | 6.8201 | 0.9743 |
+
+  Reading: the noisy tokenizer is behind vq at every level until 11 (level 4: 0.41 vs 0.61) but ends equal on `acc_full`; vq loses codebook usage at the two coarsest levels late in training (0.79 / 0.57) while noisy `eff_rank/7` stays >= 0.97 everywhere — the late coarsest-level degradation is a vq phenomenon.
+- Figure C fixtures (`tests/test_plot_tokenizer_levels.py`, 6 tests): the last record containing `acc_full` wins over a trailing record without it; PNG written (>1 KB); the table carries one row per level with the record's numbers and `eff_rank/7`; missing `metrics.jsonl` -> exit 1 with `missing .../<run>/metrics.jsonl`; a file without any `acc_full` -> exit 1 (`no record with 'acc_full'`); differing level counts -> exit 1.
+- `RUNBOOK.md` §0.3 "Lite configuration" added: when to use, the `CONFIG`/`--config` commands, and the suffix rule with the `budget.py` filter.
 
 ### T5.5 trainer review fixes F11–F15/F17 — re-verified 2026-11-11
 - Audit at HEAD `a07f29e`: `GeneratorBackbone.embed_levels` keeps `pooled_reconstructions` under `no_grad` when the tokenizer is frozen and applies `input_embed` outside; `compute_generator_loss` and `joint_loss` share it (F11). `sample_cutoff` draws on `generator.device` (F12). `generator.train.grad_accum` is validated and loops equal micro-batches in both trainers; `jepa_dev.yaml` notes per-micro-batch VICReg statistics (F13). Both dev configs carry the 10-point milestone grid and milestone files omit `optimizer_state_dict` (F14). Both trainers log the four `n_params_*` fields in their first record and `gate_report.py` prints `n_params` (F15). `frozen_codes` wraps encode+corruption in `no_grad` plus `autocast(enabled=False)` (F17).

@@ -123,6 +123,42 @@ same command is always safe: chains resume from `ckpt/latest.pt` and finished
 chunks no-op on `DONE`. Then merge and judge the gate as in §2.2, §3, §3A.3
 and §3B.
 
+### 0.3 Lite configuration (smaller generator, same protocol)
+
+Use a lite config when the full-size generator would cost more H100-hours than
+the question is worth: a first end-to-end pass over a phase, a G2 ablation
+sweep, or a result you expect to be decided by the coarse levels alone. The lite
+files are copies of the dev files with only the generator shrunk (H 512,
+8 layers, 8 heads, batch 256), so `L`, `V`, the tokenizer (d 384, K 12), the
+generator budget, the corruption schedule and the 10% milestone grid are
+identical and the numbers stay comparable to the dev runs.
+
+| Phase | Config | Run ids |
+| --- | --- | --- |
+| g0, g1 | `configs/tinystories_lite.yaml` | `tok_vq_10k_lite`, `gen_vq_ce_lite`, `gen_noisy_flow_lite`, ... |
+| g2 | `configs/jepa_lite.yaml` | `jepa_base_lite`, `jepa_no_vicreg_lite`, ... |
+
+Two ways to select it, both optional and both defaulting to the dev config:
+`CONFIG` on a single template, `--config` on the launcher.
+
+```bash
+# one template by hand
+sbatch ... --export=ALL,RUN_ID=gen_vq_ce_lite,\\
+TOKENIZER=results/tok_vq_10k_lite/ckpt/latest.pt,\\
+CONFIG=configs/tinystories_lite.yaml scripts/slurm/gen.sbatch
+# a whole phase through the kit
+scripts/launch_phase.sh g0 pilot --config configs/tinystories_lite.yaml
+python scripts/budget.py --config configs/tinystories_lite.yaml
+```
+
+The suffix rule: when the config is not a dev config, every run id the kit
+builds carries the config stem as a suffix — `gen_vq_ce_dev` becomes
+`gen_vq_ce_lite`, `pilot_gen_vq_ce` becomes `pilot_gen_vq_ce_lite`, and ids
+without a `_dev` tail (`tok_vq_10k`) get it appended (`tok_vq_10k_lite`). Dev and
+lite therefore never share a run id, a `ckpt/` directory or a `DONE` file, and
+`budget.py` filters pilot records by the same suffix: a lite projection only
+uses lite pilots (everything else is `MISSING`, never a dev number).
+
 ## 1. Syncing FIR
 
 ### 1.1 Code: private git remote (preferred) — this is how code updates work
