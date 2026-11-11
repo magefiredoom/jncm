@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -145,6 +146,76 @@ def test_g2_forwards_the_jepa_config(tmp_path: Path) -> None:
     jepa = [line for line in _sbatch_lines(result.stdout) if "jepa.sbatch" in line]
     assert jepa
     assert all("CONFIG=configs/jepa_lite.yaml" in line for line in jepa)
+
+
+@pytest.mark.parametrize(
+    "phase,config,expected",
+    [
+        ("g0", None, {"pilot_tok_vq", "pilot_gen_vq_ce"}),
+        (
+            "g1",
+            None,
+            {"pilot_tok_noisy", "pilot_gen_noisy_flow", "pilot_gen_noisy_regress"},
+        ),
+        ("g2", None, {"pilot_jepa_base"}),
+        (
+            "g0",
+            "configs/tinystories_lite.yaml",
+            {"pilot_tok_vq_lite", "pilot_gen_vq_ce_lite"},
+        ),
+        (
+            "g1",
+            "configs/tinystories_lite.yaml",
+            {
+                "pilot_tok_noisy_lite",
+                "pilot_gen_noisy_flow_lite",
+                "pilot_gen_noisy_regress_lite",
+            },
+        ),
+        ("g2", "configs/jepa_lite.yaml", {"pilot_jepa_base_lite"}),
+    ],
+)
+def test_dry_run_run_ids_follow_the_config(
+    tmp_path: Path, phase: str, config: str | None, expected: set[str]
+) -> None:
+    """T5.5c: a non-dev config suffixes every run id, so DONE files never mix."""
+    root = _fixture_repo(tmp_path)
+    args = [phase, "pilot"] + (["--config", config] if config else [])
+
+    result = _run(root, args)
+
+    assert result.returncode == 0, result.stderr
+    ids = set(re.findall(r"RUN_ID=([^,\s]+)", result.stdout))
+    assert ids == expected, ids
+    if config:
+        assert "run-id suffix lite" in result.stdout
+        assert not any(run.endswith("_dev") for run in ids), ids
+        assert "_lite/ckpt/latest.pt" in result.stdout
+    else:
+        assert "run-id suffix none" in result.stdout
+        assert not any("_lite" in line for line in _sbatch_lines(result.stdout))
+
+
+def test_lite_full_run_uses_the_lite_pilot_record(tmp_path: Path) -> None:
+    """T5.5c: the chunk count comes from the suffixed pilot, not the dev one."""
+    root = _fixture_repo(tmp_path)
+    _seed_pilot(root, "pilot_tok_vq", 8.0)
+    _seed_pilot(root, "pilot_gen_vq_ce", 8.0)
+    _seed_pilot(root, "pilot_tok_vq_lite", 1.0)
+    _seed_pilot(root, "pilot_gen_vq_ce_lite", 1.0)
+
+    result = _run(root, ["g0", "full", "--config", "configs/tinystories_lite.yaml"])
+
+    assert result.returncode == 0, result.stderr
+    tok = [line for line in _sbatch_lines(result.stdout) if "tok.sbatch" in line]
+    gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
+    # ceil(10000 * 1.0 / (0.9 * 10800)) = 2 chunks, from the _lite pilots.
+    assert len(tok) == 2 and len(gen) == 2
+    assert "(pilot pilot_tok_vq_lite)" in result.stderr
+    assert "tok_vq_10k_lite" in tok[0]
+    assert "gen_vq_ce_lite" in gen[0]
+    assert "TOKENIZER=results/tok_vq_10k_lite/ckpt/latest.pt" in gen[0]
+    assert "_dev" not in "".join(tok + gen)
 
 
 def test_g2_pilot_lists_ablations_without_submitting_them(tmp_path: Path) -> None:

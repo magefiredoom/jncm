@@ -12,6 +12,11 @@ A single run above 12 H100-hours is flagged: with our fair-share over-used, a
 job that long would wait too long, and it must be chained into shorter chunks
 (``scripts/slurm/chain.sh``) instead of submitted whole.
 
+``--config`` selects the configuration the projection is for. A non-dev config
+adds its stem as a run-id suffix, exactly as ``scripts/launch_phase.sh`` does
+(``configs/tinystories_lite.yaml`` -> ``gen_vq_ce_lite``), and only pilot
+records carrying that suffix are used, so a dev pilot never sizes a lite run.
+
 Usage:
     python scripts/budget.py
     python scripts/budget.py --results results
@@ -45,6 +50,32 @@ RUNS: list[tuple[str, str, str, int]] = [
 HEADER = f"{'phase':<5} {'run':<27} {'steps':>7} {'sec/step':>10} {'hours':>7}"
 
 
+def config_suffix(config: Path | None) -> str:
+    """Run-id suffix for a config file, ``""`` for the dev defaults (T5.5c).
+
+    ``configs/tinystories_lite.yaml`` and ``configs/jepa_lite.yaml`` both give
+    ``lite``, matching the rule in ``scripts/launch_phase.sh``.
+    """
+    if config is None:
+        return ""
+    stem = config.stem
+    if stem.endswith("_dev"):
+        return ""
+    for prefix in ("tinystories_", "jepa_"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix) :]
+    return stem
+
+
+def with_suffix(run_id: str, suffix: str) -> str:
+    """``gen_vq_ce_dev`` + ``lite`` -> ``gen_vq_ce_lite``; else append ``_lite``."""
+    if not suffix:
+        return run_id
+    if run_id.endswith("_dev"):
+        return f"{run_id[: -len('_dev')]}_{suffix}"
+    return f"{run_id}_{suffix}"
+
+
 def pilot_sec_per_step(results_dir: Path, pilot_id: str) -> float | None:
     """``sec_per_step`` of the last record of a pilot run, ``None`` if absent."""
     path = results_dir / pilot_id / "metrics.jsonl"
@@ -74,17 +105,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.config is not None and not args.config.is_file():
         parser.error(f"config file not found: {args.config}")
 
+    suffix = config_suffix(args.config)
     print("== jncm budget projection (H100-hours = steps x pilot sec_per_step / 3600)")
     config_label = (
         args.config.as_posix() if args.config is not None else "template defaults (dev)"
     )
     print(f"config: {config_label}")
+    print(f"run-id suffix: {'' if not suffix else '_' + suffix}")
     print(HEADER)
     totals: dict[str, float] = {}
     missing: list[str] = []
     flagged: list[tuple[str, float]] = []
     measured: list[float] = []
-    for phase, run_id, pilot_id, steps in RUNS:
+    for phase, base_run, base_pilot, steps in RUNS:
+        run_id = with_suffix(base_run, suffix)
+        pilot_id = with_suffix(base_pilot, suffix)
         sec = pilot_sec_per_step(args.results, pilot_id)
         if sec is None:
             print(f"{phase:<5} {run_id:<27} {steps:>7} {'MISSING':>10} {'n/a':>7}")

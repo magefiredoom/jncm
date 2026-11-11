@@ -19,6 +19,11 @@
 # --config selects the YAML passed to every template through CONFIG (default:
 #   each template's dev config). The lite configs are
 #   configs/tinystories_lite.yaml (g0/g1) and configs/jepa_lite.yaml (g2).
+#   A non-dev config also suffixes every run id this kit builds with the config
+#   stem (configs/*_lite.yaml -> _lite): gen_vq_ce_dev becomes gen_vq_ce_lite,
+#   tok_vq_10k becomes tok_vq_10k_lite and pilot_gen_vq_ce becomes
+#   pilot_gen_vq_ce_lite, so dev and lite never share a run id, a checkpoint
+#   directory or a DONE file.
 #
 # pilot: run ids pilot_*, 500 tokenizer / 300 generator / 200 JEPA steps,
 #   --time 00:20:00, GEN_PPL=1 on the generators (decoded samples plus Gen PPL
@@ -137,6 +142,19 @@ if [[ -z "${SBATCH_ACCOUNT:-}" ]]; then
   die "SBATCH_ACCOUNT is unset; export SBATCH_ACCOUNT=<allocation> first (never guessed, SPEC 7)"
 fi
 
+# T5.5c: a non-dev CONFIG gives every run id the config stem as a suffix.
+SUFFIX=""
+if [[ -n "$CONFIG" ]]; then
+  STEM="$(basename "$CONFIG")"
+  STEM="${STEM%.yaml}"
+  STEM="${STEM%.yml}"
+  if [[ "$STEM" != *_dev ]]; then
+    STEM="${STEM#tinystories_}"
+    STEM="${STEM#jepa_}"
+    SUFFIX="$STEM"
+  fi
+fi
+
 if [[ "$MODE" == "pilot" && "$WALL_GIVEN" -eq 0 ]]; then
   WALL="$PILOT_WALL"
 fi
@@ -148,12 +166,33 @@ WALL_SECONDS=$(awk -F: '{ print $1 * 3600 + $2 * 60 + $3 }' <<< "$WALL")
 LAST_ID=""
 LAUNCHED=0
 
+rid() {
+  # rid <dev run id>: the config suffix replaces a trailing _dev, else appends.
+  if [[ -z "$SUFFIX" ]]; then
+    printf '%s' "$1"
+  elif [[ "$1" == *_dev ]]; then
+    printf '%s_%s' "${1%_dev}" "$SUFFIX"
+  else
+    printf '%s_%s' "$1" "$SUFFIX"
+  fi
+}
+
+base_id() {
+  # base_id <run id>: the dev-shaped id, without the config suffix.
+  if [[ -n "$SUFFIX" && "$1" == *"_${SUFFIX}" ]]; then
+    printf '%s' "${1%"_${SUFFIX}"}"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 pilot_id() {
-  # Full run id -> its pilot counterpart (tok ids end in _10k, rest in _dev).
+  # Dev run id -> its pilot counterpart (tok ids end in _10k, rest in _dev),
+  # carrying the config suffix so pilot ids split per config too.
   case "$1" in
-    tok_vq_10k) echo "pilot_tok_vq" ;;
-    tok_noisy_10k) echo "pilot_tok_noisy" ;;
-    *) echo "pilot_${1%_dev}" ;;
+    tok_vq_10k) rid pilot_tok_vq ;;
+    tok_noisy_10k) rid pilot_tok_noisy ;;
+    *) rid "pilot_${1%_dev}" ;;
   esac
 }
 
@@ -175,7 +214,7 @@ compute_chunks() {
   if [[ "$MODE" == "pilot" ]]; then
     return 0
   fi
-  pilot="$(pilot_id "$run")"
+  pilot="$(pilot_id "$(base_id "$run")")"
   sec="$(pilot_sec_per_step "$pilot")"
   source="pilot ${pilot}"
   if [[ -z "$sec" ]]; then
@@ -291,6 +330,8 @@ run_g0() {
     TOK_STEPS_N="$PILOT_TOK_STEPS"
     GEN_STEPS_N="$PILOT_GEN_STEPS"
   fi
+  TOK_RUN="$(rid "$TOK_RUN")"
+  GEN_RUN="$(rid "$GEN_RUN")"
   echo "== G0 ${MODE}: ${TOK_RUN} (vq tokenizer) -> ${GEN_RUN} (ce generator) -> eval"
   launch_tok vq "$TOK_RUN" "$TOK_STEPS_N"
   if ((LAUNCHED)); then
@@ -317,6 +358,9 @@ run_g1() {
     TOK_STEPS_N="$PILOT_TOK_STEPS"
     GEN_STEPS_N="$PILOT_GEN_STEPS"
   fi
+  TOK_RUN="$(rid "$TOK_RUN")"
+  GEN_FLOW="$(rid "$GEN_FLOW")"
+  GEN_REGRESS="$(rid "$GEN_REGRESS")"
   echo "== G1 ${MODE}: ${TOK_RUN} (noisy tokenizer) -> ${GEN_FLOW} + ${GEN_REGRESS} -> eval"
   launch_tok noisy "$TOK_RUN" "$TOK_STEPS_N"
   if ((LAUNCHED)); then
@@ -343,20 +387,22 @@ run_g2() {
     TOK_RUN="tok_noisy_10k"
     steps="$FULL_JEPA_STEPS"
   fi
+  TOK_RUN="$(rid "$TOK_RUN")"
   require_checkpoint "results/${TOK_RUN}/ckpt/latest.pt" \
     "run 'scripts/launch_phase.sh g1 ${MODE} --submit' first (it trains ${TOK_RUN})"
   base_label="${JEPA_RUNS[0]}"
   if [[ "$MODE" == "pilot" ]]; then
     base_label="pilot_${JEPA_RUNS[0]%_dev}"
   fi
+  base_label="$(rid "$base_label")"
   echo "== G2 ${MODE}: ${base_label} and its ablations, tokenizer ${TOK_RUN}"
   for ((i = 0; i < ${#JEPA_RUNS[@]}; i++)); do
     full_run="${JEPA_RUNS[$i]}"
     sets="${JEPA_SETS[$i]}"
     if [[ "$MODE" == "pilot" ]]; then
-      run="pilot_${full_run%_dev}"
+      run="$(rid "pilot_${full_run%_dev}")"
     else
-      run="$full_run"
+      run="$(rid "$full_run")"
     fi
     if ((i > 0 && !ABLATIONS)); then
       echo "LIST ${run} (SETS=\"${sets}\"); pass --ablations to submit"
@@ -381,7 +427,7 @@ run_g2() {
   done
 }
 
-echo "launch_phase ${PHASE} ${MODE}: wall ${WALL}, config ${CONFIG:-template default}, account ${SBATCH_ACCOUNT}, $([[ -n "$SUBMIT" ]] && echo submit || echo "dry-run (pass --submit)")"
+echo "launch_phase ${PHASE} ${MODE}: wall ${WALL}, config ${CONFIG:-template default}, run-id suffix ${SUFFIX:-none}, account ${SBATCH_ACCOUNT}, $([[ -n "$SUBMIT" ]] && echo submit || echo "dry-run (pass --submit)")"
 case "$PHASE" in
   g0) run_g0 ;;
   g1) run_g1 ;;

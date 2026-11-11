@@ -24,9 +24,9 @@ def _write_pilot(root: Path, pilot_id: str, sec_per_step: float) -> None:
     (directory / "metrics.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _all_pilots(root: Path, sec_per_step: float) -> None:
+def _all_pilots(root: Path, sec_per_step: float, suffix: str = "") -> None:
     for _, _, pilot_id, _ in budget.RUNS:
-        _write_pilot(root, pilot_id, sec_per_step)
+        _write_pilot(root, budget.with_suffix(pilot_id, suffix), sec_per_step)
 
 
 def _run(root: Path) -> subprocess.CompletedProcess:
@@ -86,7 +86,7 @@ def test_reports_missing_pilots_and_excludes_them(tmp_path: Path) -> None:
 
 def test_accepts_and_prints_the_config(tmp_path: Path) -> None:
     """T5.5b: --config is accepted and names the configuration projected."""
-    _all_pilots(tmp_path, 1.0)
+    _all_pilots(tmp_path, 1.0, "lite")
 
     result = subprocess.run(
         [
@@ -103,6 +103,7 @@ def test_accepts_and_prints_the_config(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "configs/tinystories_lite.yaml" in result.stdout
+    assert "gen_vq_ce_lite" in result.stdout
 
 
 def test_missing_config_fails_loudly(tmp_path: Path) -> None:
@@ -121,6 +122,65 @@ def test_missing_config_fails_loudly(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert "nope.yaml" in result.stderr
+
+
+def test_config_suffix_matches_the_launch_kit() -> None:
+    """T5.5c: dev configs get no suffix, lite configs get 'lite'."""
+    assert budget.config_suffix(None) == ""
+    assert budget.config_suffix(Path("configs/tinystories_dev.yaml")) == ""
+    assert budget.config_suffix(Path("configs/jepa_dev.yaml")) == ""
+    assert budget.config_suffix(Path("configs/tinystories_lite.yaml")) == "lite"
+    assert budget.config_suffix(Path("configs/jepa_lite.yaml")) == "lite"
+    assert budget.with_suffix("gen_vq_ce_dev", "lite") == "gen_vq_ce_lite"
+    assert budget.with_suffix("tok_vq_10k", "lite") == "tok_vq_10k_lite"
+    assert budget.with_suffix("gen_vq_ce_dev", "") == "gen_vq_ce_dev"
+
+
+def test_lite_config_uses_only_suffixed_pilots(tmp_path: Path) -> None:
+    """T5.5c: a dev pilot record never sizes a lite projection."""
+    _all_pilots(tmp_path, 1.0)
+    _write_pilot(tmp_path, "pilot_gen_vq_ce_lite", 3.0)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/budget.py",
+            "--results",
+            str(tmp_path),
+            "--config",
+            "configs/tinystories_lite.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1  # every other lite pilot is missing
+    assert "run-id suffix: _lite" in result.stdout
+    assert "gen_vq_ce_lite" in result.stdout
+    assert "3.0000" in result.stdout
+    assert "gen_vq_ce_dev" not in result.stdout
+    assert "MISSING gen_noisy_flow_lite (pilot pilot_gen_noisy_flow_lite)" in result.stdout
+
+
+def test_lite_projection_is_missing_without_lite_pilots(tmp_path: Path) -> None:
+    _all_pilots(tmp_path, 1.0)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/budget.py",
+            "--results",
+            str(tmp_path),
+            "--config",
+            "configs/jepa_lite.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "MISSING jepa_base_lite" in result.stdout
+    assert "TOTAL: 0.00 H100-hours over 0 run(s)" in result.stdout
 
 
 def test_pilot_reader_ignores_records_without_the_field(tmp_path: Path) -> None:
