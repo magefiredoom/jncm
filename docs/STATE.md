@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-11 (T5.5c done: lite launch kit — `--config` gives every run id a config-stem suffix so dev and lite never share a run id or a `DONE` file, `budget.py` filters pilots by the same suffix — plus `scripts/plot_tokenizer_levels.py` (Figure C) and `RUNBOOK.md` §0.3. Everything ran on CPU only; nothing was submitted. F16 corruption sweep remains blocked on FIR: `models/gpt2-large` is absent there (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup)
+Last updated: 2026-11-11 (T5.5c done: lite launch kit — `--config` gives every run id a config-stem suffix so dev and lite never share a run id or a `DONE` file, `budget.py` filters pilots by the same suffix — plus `scripts/plot_tokenizer_levels.py` (Figure C) and `RUNBOOK.md` §0.3. Everything ran on CPU only; nothing was submitted. F16 corruption sweep remains blocked on FIR: `models/gpt2-large` is absent there (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup. 2026-11-11 FIR pass: sync re-proven at `e43ba47`, both tokenizer runs now carry backfilled `DONE` files, six pilot plans dry-run green (dev + lite) but **nothing was submitted** — GPT-2 is still missing on FIR)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -10,19 +10,31 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - All five Slurm templates now exist (`prep`, `tok`, `gen`, `eval`, `jepa`); `eval.sbatch` evaluates milestone checkpoints with one array task per seed (joint JEPA checkpoints included), `jepa.sbatch` and `gen.sbatch` run arms from `SETS`, and all four training/eval templates accept an optional `CONFIG`.
 - T5.5b milestone checkpoints: the dev configs write `ckpt/milestone_<pct>.pt` every 10% (`[0.1, ..., 1.0]`), `smoke` configs keep 10/25/50/100%, milestone files omit Adam state, and `run_eval.py` evaluates exactly those by default.
 - T0.2 real data prep and the T1.2 protocol gate are now verified locally on real TinyStories data; `models/gpt2-large` is present in `models/gpt2-large`.
-- Gate G0a is next (cluster, human): sync the FIR tree and copy `data/tinystories/` + `models/gpt2-large/` first (`RUNBOOK.md` §1). **BLOCKED 2026-11-09**: FIR has no `~/jncm_git` (only the non-git tar tree `~/jncm` and `~/jncm_agent`), no `models/` anywhere under `$HOME`, and `GPT2_LARGE_PATH` is unset; the pilots were neither dry-run nor submitted. The human must run the clone/pull block in "Human must fill / do".
-- G0a tokenizer jobs: 2880034 `tok_vq_10k` **COMPLETED** (`02:21:20`, final step 10000, `acc_full 0.99998` -> PASS); 2880035 `tok_noisy_10k` still PENDING; the 24 h job 2800220 was cancelled.
+- Gate G0a is next (cluster, human): the `~/jncm_git` clone exists and is at local HEAD `e43ba47` (2026-11-11); `data`, `results` and `.venv` symlinks resolve, but there is still **no `models/` on FIR** — `models/gpt2-large` must be rsynced (2.89 GB locally, `RUNBOOK.md` §1) and `~/jncm_git/models` symlinked before any `GEN_PPL=1` job. Six pilot plans (g0/g1/g2 x dev/lite) dry-run green on 2026-11-11; **nothing submitted**.
+- G0a tokenizer jobs: 2880034 `tok_vq_10k` **COMPLETED** (`02:21:20`, final step 10000, `acc_full 0.99998` -> PASS); 2880035 `tok_noisy_10k` **COMPLETED** 2026-11-09 (`02:16:49`, final step 10000, `acc_full 0.99994` -> PASS). Both now have backfilled `DONE` files (0.848 and 0.8209 s/step). The 24 h job 2800220 was cancelled.
 
 ## FIR jobs
 
 | Job ID | Run ID | STEPS | Time limit | State (polled 2026-11-09) |
 | --- | --- | --- | --- | --- |
-| 2880034 | `tok_vq_10k` | 10,000 | 04:00:00 | **COMPLETED** `02:21:20`, `ExitCode 0:0`; final step 10000, `acc_full 0.9999847` -> G0a vq PASS (>= 0.999) |
-| 2880035 | `tok_noisy_10k` | 10,000 | 04:00:00 | **PENDING** (queued since 2026-11-07, `4:00:00` limit); `results/tok_noisy_10k` does not exist yet |
+| 2880034 | `tok_vq_10k` | 10,000 | 04:00:00 | **COMPLETED** `02:21:20`, `ExitCode 0:0`; final step 10000, `acc_full 0.9999847` -> G0a vq PASS (>= 0.999); `DONE` backfilled 2026-11-11 (`sec_per_step 0.848`) |
+| 2880035 | `tok_noisy_10k` | 10,000 | 04:00:00 | **COMPLETED** `02:16:49`, `ExitCode 0:0`, ended 2026-11-09T09:29:09; final step 10000, `acc_full 0.99993896` -> G0a noisy PASS; `DONE` backfilled 2026-11-11 (`sec_per_step 0.8209`) |
 
-Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. **No `DONE` file exists for 2880034** because the FIR `~/jncm` tree predates T4.5 (`grep -c write_done jncm/utils.py` -> `0`); completion is established by `sacct` plus the final metrics record at `step 10000`, and that record is the config budget, so the run owes nothing. Wall clock per step (startup included): `02:21:20 / 10,000` = 0.85 s/step; use a real pilot record, not this number, to size a chain. No job was submitted or polled further this session; the sync blocker below stopped the pilot work.
+Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither tokenizer run wrote a `DONE` file at the time (the FIR `~/jncm` tree predates T4.5), so on 2026-11-11 both were backfilled with the repo's own `jncm.utils.write_done` from the T4.5 checkout `~/jncm_git`: `{"step": 10000, "sec_per_step": 0.848}` and `{"step": 10000, "sec_per_step": 0.8209}` (from `sacct` `Elapsed` `02:21:20` and `02:16:49`). Completion itself is established by `sacct` plus the final metrics record at `step 10000`. Wall clock per step (startup included) is 0.85 / 0.82 s/step; use a real pilot record, not these numbers, to size a chain. No job was submitted this session; the missing-GPT-2 blocker below stopped the pilot work.
 
 ## VERIFIED (command + last lines of output)
+
+### FIR sync, DONE backfill and pilot dry runs — VERIFIED 2026-11-11 (zellij `attach`, pane `terminal_0`, login2)
+- Channel: `hostname -f` -> `login2.int.fir.alliancecan.ca`; `echo ACC=$SBATCH_ACCOUNT` -> `ACC=def-cheng23`.
+- Sync: `cd ~/jncm_git && git pull --ff-only` -> `Already up to date.`, `RC=0`; `git rev-parse HEAD` -> `e43ba47fe2a5f440e8cce4221c8bf4081cd171a9` = local HEAD; `git status --short` -> empty.
+- Empty status needed a session-local `.git/info/exclude` (`.venv`, `data`, `results`, `models`): `.gitignore` lists `data/`, `models/`, `results/`, `.venv/` with a trailing slash, which never matches a symlink, so the four docked symlinks show as `??` on an otherwise clean checkout. One leftover `slurm-3234940.out` was moved to `results/.slurm-3234940.out` (nothing deleted, no `rm`).
+- Symlinks: `data -> /home/aefad/jncm/data`, `results -> /home/aefad/jncm/results`, `.venv -> /home/aefad/jncm/.venv` all resolve; **`models` is absent** (`ls: cannot access 'models'`), and `~/jncm/models` itself does not exist.
+- Env: `export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large` -> `ls: cannot access '/home/aefad/jncm/models/gpt2-large': No such file or directory`, `LS1=2`; `find /home/aefad -maxdepth 4 -iname "*gpt2*"` -> nothing; `find /home/aefad -maxdepth 6 -type d -name "*models*"` -> only racerbot `dynamic_models` dirs; `find /scratch/aefad /project/def-cheng23 -maxdepth 3 -iname "*gpt*"` -> nothing. `module load python/3.12; source .venv/bin/activate; python -c "import jncm, torch, transformers"` -> `jncm /home/aefad/jncm_git/jncm/__init__.py`, `torch 2.14.1`, `tf 5.22.1`, exit 0 (transformers import takes ~3 min cold on GPFS).
+- Job 2880035: `scontrol update JobId=2880035 TimeLimit=03:00:00` -> `Invalid job id specified` / `SRC=1`; `sprio -j 2880035` -> `slurm_load_jobs error: Invalid job id specified`. `sacct -j 2880035` -> `2880035 jncm_tok COMPLETED 02:16:49 0:0 2026-11-09T09:29:09`. The job had already finished, so the requested 3 h limit was moot; nothing was cancelled.
+- DONE backfill with the repo writer `jncm.utils.write_done` (no rerun): `results/tok_vq_10k/DONE` -> `{"step": 10000, "sec_per_step": 0.848, "finished_at": "2026-11-10T22:27:21"}`; `results/tok_noisy_10k/DONE` -> `{"step": 10000, "sec_per_step": 0.8209, "finished_at": "2026-11-10T22:42:50"}`. Noisy final record: `n_records 21 step 10000 acc_full 0.99993896484375 data_source real` -> PASS.
+- Bug found (launch kit, not fixed in git): `scripts/slurm/chain.sh` is committed `100644` while `launch_phase.sh:244` runs `"$CHAIN" ...`; on Linux `bash scripts/launch_phase.sh g0 pilot` -> `line 244: scripts/slurm/chain.sh: Permission denied`, `RC=126`. Workaround: `chmod +x scripts/slurm/chain.sh` in the FIR working tree only (repo and HEAD untouched; `git status` then shows that one mode change). Fix later with `git update-index --chmod=+x` on `scripts/slurm/chain.sh` (`launch_phase.sh` itself is invoked via `bash`).
+- Dry runs, six green after the chmod (each prints `dry-run (pass --submit)`; no `sbatch` is executed): `g0 pilot` -> `pilot_tok_vq` -> `pilot_gen_vq_ce` (`GEN_PPL=1`) -> eval `N_SAMPLES=32,N_SEEDS=1`; `g1 pilot` -> `pilot_tok_noisy` -> flow + regress in parallel -> 2 evals; `g2 pilot` -> `pilot_jepa_base` (`STEPS=200`) + 6 `LIST` ablations, with `WARNING: results/pilot_tok_noisy/ckpt/latest.pt not found (dry-run only)`. `--config configs/tinystories_lite.yaml` yields `pilot_tok_vq_lite`, `pilot_gen_vq_ce_lite`, `pilot_tok_noisy_lite`, `pilot_gen_noisy_flow_lite`, `pilot_gen_noisy_regress_lite`, `pilot_jepa_base_lite` and forwards `CONFIG=` to every export. **Nothing was submitted.**
+- Blocker: every g0/g1 gen pilot exports `GEN_PPL=1` and `train_generator.py` builds `GPT2Scorer` at startup, so those jobs cannot start until `~/jncm/models/gpt2-large` exists (local copy 2.89 GB: `model.safetensors` 2952.7 MB, `tokenizer.json` 3.4 MB). Human action: rsync it, `ln -s /home/aefad/jncm/models models` in `~/jncm_git`, then re-run the six dry runs and submit on "go". `budget.py` was not run: with no pilot records under `results/pilot_*` it can only print `MISSING`.
 
 ### T5.5c lite launch kit + Figure C — VERIFIED 2026-11-11
 - `bash -n` on `scripts/slurm/{prep,tok,gen,eval,jepa}.sbatch`, `scripts/slurm/chain.sh` and `scripts/launch_phase.sh` (Git bash first on PATH): `exit=0` for all seven.
@@ -489,7 +501,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 10. RESOLVED 2026-11-07: `scripts/g0a_report.py` takes `--runs` (default `tok_vq_10k tok_noisy_10k`) and keys the thresholds on each run's quantizer variant (0.999 vq / 0.995 noisy), read from `results/<run_id>/config.yaml` (`tokenizer.quantizer`) with a run-id fallback; an unknown variant fails loudly. The 10k gate pair can now be judged directly.
 11. With `jepa.vicreg` on and `head=flow`, the VICReg c-hat term integrates the flow (`flow_steps` network calls per level) inside the loss (Q11), so a JEPA flow step costs more than a Phase-1 flow step; `regress` has no such overhead. The EMA copy also holds the tokenizer decoder, which the target chain never uses (Q10).
 12. RESOLVED 2026-11-08 (T4.4): `scripts/slurm/eval.sbatch` no longer requires `TOKENIZER`. It passes `--tokenizer` only when the variable is set, so a joint JEPA run (`run_eval.py` reads the tokenizer from the joint checkpoint) works without it; a staged run still needs `TOKENIZER=<path>` (RUNBOOK §3A.3).
-13. FIR `~/jncm` (the tar tree) predates T4.5: `grep -c write_done jncm/utils.py` -> `0`, so runs there write no `results/<run_id>/DONE` and completion has to be read from `sacct` plus the last metrics record. The `~/jncm_git` clone fixes this once it exists. FIR also has no `models/` directory at all and `GPT2_LARGE_PATH` is unset, so `RUNBOOK.md` §1.2 must be repeated before any generator or eval job.
+13. FIR `~/jncm` (the tar tree) predates T4.5: `grep -c write_done jncm/utils.py` -> `0`, so runs there write no `results/<run_id>/DONE` and completion has to be read from `sacct` plus the last metrics record. The `~/jncm_git` clone has the T4.5 writer and the two finished tokenizer runs were backfilled through it on 2026-11-11. FIR still has no `models/` directory at all and `GPT2_LARGE_PATH` is unset, so `RUNBOOK.md` §1.2 must be repeated before any generator or eval job. Two launch-kit bugs seen only on a Linux checkout: `scripts/slurm/chain.sh` is committed `100644` but is exec'd by `launch_phase.sh:244` (needs `git update-index --chmod=+x`), and `.gitignore`'s `data/`/`models/`/`results/`/`.venv/` patterns do not match symlinks, so a docked checkout is never `git status`-clean without `.git/info/exclude`.
 
 ## ASSUMPTIONs (spec ambiguities resolved; details in docs/QUESTIONS.md)
 - Synthetic data is allowed only with `allow_synthetic=True` / `--allow_synthetic`; real runs fail loudly if `data/tinystories/{train,val}.bin` are missing.
@@ -532,18 +544,13 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
   2. `pilot_gen_vq_ce` is queued as job 3234940 (100 steps, dev config, `grad_accum=16`, `GEN_PPL=0`). Its last record gives `sec_per_step`; the three `--time` values follow `ceil(1.3 * sec_per_step * 2000)`. No action unless the job dies.
   3. Micro-batch decided: dev config plus `generator.train.grad_accum=16` in `SETS` (effective batch stays 1024).
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
-- Before G0a/G0: sync the FIR tree from the private remote and copy `data/tinystories/` + `models/gpt2-large/` (`RUNBOOK.md` §1.1/§1.2; every ssh/rsync asks for MFA).
-- **BLOCKED 2026-11-09 — only the human can do this (agents must never type credentials).** On FIR, in the zellij pane:
-  ```bash
-  cd ~ && git clone https://github.com/magefiredoom/jncm jncm_git
-  ln -s ~/jncm/data ~/jncm_git/data
-  ```
-  If GitHub prompts, enter your username and a personal access token yourself. Then, from the local repo root (MFA):
+- G0a/G0 sync status (2026-11-11): `~/jncm_git` exists at `e43ba47` (= local HEAD), `git status --short` empty, `data`/`results`/`.venv` symlinks resolve. **Only the model is missing.**
+- **BLOCKED 2026-11-11 — only the human can do this (MFA; agents must never type credentials).** From the local repo root:
   ```bash
   rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/
   ```
-  and on FIR: `ln -s ~/jncm/models ~/jncm_git/models; export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large`. Verify with `cd ~/jncm_git && git rev-parse HEAD` (must equal the local SHA; this session pushed `2422239` plus the docs commit that follows it), `git status --short` (empty), and `ls $GPT2_LARGE_PATH/config.json`.
-- Run Gate G0a on a cluster GPU: jobs 2880034/2880035 (`tok_vq_10k`/`tok_noisy_10k`, 10,000 steps, 4 h); record exact-token accuracy with `RUNBOOK.md` §4.2.
+  then on FIR, in the zellij pane: `ln -s ~/jncm/models ~/jncm_git/models; export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large`. Verify with `ls $GPT2_LARGE_PATH/config.json` and `ls -ld ~/jncm_git/models`. Without it every `GEN_PPL=1` pilot and eval fails at startup, so the six dry-run pilot plans stay unsubmitted.
+- Gate G0a is done for both tokenizers: 2880034 `tok_vq_10k` (`02:21:20`, `acc_full 0.99998`) and 2880035 `tok_noisy_10k` (`02:16:49`, `acc_full 0.99994`) both COMPLETED -> PASS; `DONE` backfilled 2026-11-11. Record the numbers with `RUNBOOK.md` §4.2 if a written verdict is still wanted.
 - **T4.1 placeholders — every one of them (nothing is guessed in the scripts):**
   - Account: pass `--account="$SBATCH_ACCOUNT"` on the sbatch command line (or let your submit wrapper read `$SLURM_ACCOUNT`); no account appears in any of the three files.
   - Partition: pass `--partition="$SBATCH_PARTITION"` on the sbatch command line; no partition appears in any file.
@@ -577,13 +584,13 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Human: copy `models/gpt2-large` to FIR and choose the F16 micro-batch / pilot path in "Human must fill / do" (those are the current blockers). The `~/jncm_git` tree is synced at `252fb3b` and now has `.venv`/`results` symlinks. Then the F16 sweep can be submitted: three `gen.sbatch` runs, `HEAD=ce`, `CONFIG=configs/tinystories_dev.yaml`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `STEPS=2000`, `GEN_PPL=1`, `RUN_ID=corr_p080|corr_p050|corr_p030`, `SETS="generator.corrupt.p_first=0.8|0.5|0.3"`, with `--time` from the pilot. `tok_vq_10k` already passes G0a for vq.
-2. Human: G0 with `HEAD=ce`, `TOKENIZER=results/tok_vq_10k/ckpt/latest.pt`, `RUN_ID=gen_vq_ce_dev`, then `eval.sbatch`/`--merge`/`plot_curves.py` (`RUNBOOK.md` §2.2).
-3. Human: Phase 1 `gen_noisy_flow_dev` and `gen_noisy_regress_dev` on `TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt` (`RUNBOOK.md` §3), then paste back §4.3–§4.4. T5.3 is done; the next agent task is T5.4 (ablation configs and runbook section).
+1. Human: rsync `models/gpt2-large` to FIR and add the `~/jncm_git/models` symlink ("Human must fill / do"). That is the only blocker for the pilot launches. Then say "go": the six dry-run plans in this file's FIR section are current, and `launch_phase.sh` submits them unchanged.
+2. Agent (after "go"): submit the g0/g1/g2 pilots for dev and lite, apply `RUNBOOK.md` §0.2, run `scripts/budget.py` for both configs, and record the job ids in "FIR jobs".
+3. Human: read the pilot `sec_per_step` and decide on the F16 sweep (`corr_p080|p050|p030`, `SETS="generator.corrupt.p_first=..."`), which also needs GPT-2 for `GEN_PPL=1`.
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
-- G0a: vq `tok_vq_10k` (2880034) COMPLETED 2026-11-09 — final step 10000, `acc_full 0.9999847`, `acc_cum` 0.078 -> 1.000, PASS vs 0.999. Noisy `tok_noisy_10k` (2880035) PENDING, no numbers yet.
+- G0a: vq `tok_vq_10k` (2880034) COMPLETED 2026-11-09 — final step 10000, `acc_full 0.9999847`, `acc_cum` 0.078 -> 1.000, PASS vs 0.999. Noisy `tok_noisy_10k` (2880035) COMPLETED 2026-11-09 (`02:16:49`) — final step 10000, `acc_full 0.9999390`, 21 records, PASS vs 0.999. Both `DONE` files backfilled 2026-11-11.
 - G0: not run
 - G1: not run
 - G2: not run
