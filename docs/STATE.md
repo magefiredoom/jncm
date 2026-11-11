@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-10 (F16 corruption-sweep preflight: code sync verified at 252fb3b on both sides and ~/jncm_git got `.venv`/`results` symlinks; a 100-step `pilot_gen_vq_ce` with `grad_accum=16` is queued as job 3234940. The three `corr_p*` runs still cannot start: `models/gpt2-large` is absent on FIR (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup)
+Last updated: 2026-11-11 (T5.5 trainer review fixes F11–F15/F17 re-verified at HEAD on CPU: targeted 13 passed, 1 skipped, full non-slow suite 276 passed, 1 skipped; the code and tests were already committed, so no new code change was needed. F16 corruption sweep remains blocked on FIR: `models/gpt2-large` is absent (`GPT2_LARGE_PATH` unset), and `GEN_PPL=1` needs it at startup)
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -23,6 +23,12 @@ Rule: newest information wins. Rewrite sections; do not append history.
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. **No `DONE` file exists for 2880034** because the FIR `~/jncm` tree predates T4.5 (`grep -c write_done jncm/utils.py` -> `0`); completion is established by `sacct` plus the final metrics record at `step 10000`, and that record is the config budget, so the run owes nothing. Wall clock per step (startup included): `02:21:20 / 10,000` = 0.85 s/step; use a real pilot record, not this number, to size a chain. No job was submitted or polled further this session; the sync blocker below stopped the pilot work.
 
 ## VERIFIED (command + last lines of output)
+
+### T5.5 trainer review fixes F11–F15/F17 — re-verified 2026-11-11
+- Audit at HEAD `a07f29e`: `GeneratorBackbone.embed_levels` keeps `pooled_reconstructions` under `no_grad` when the tokenizer is frozen and applies `input_embed` outside; `compute_generator_loss` and `joint_loss` share it (F11). `sample_cutoff` draws on `generator.device` (F12). `generator.train.grad_accum` is validated and loops equal micro-batches in both trainers; `jepa_dev.yaml` notes per-micro-batch VICReg statistics (F13). Both dev configs carry the 10-point milestone grid and milestone files omit `optimizer_state_dict` (F14). Both trainers log the four `n_params_*` fields in their first record and `gate_report.py` prints `n_params` (F15). `frozen_codes` wraps encode+corruption in `no_grad` plus `autocast(enabled=False)` (F17).
+- Targeted F11–F15/F17 node IDs: `.venv/Scripts/python.exe -m pytest -q <14 node ids>` -> `13 passed, 1 skipped in 9.53s`; the skip is `tests/test_tokenizer.py::test_sample_cutoff_accepts_a_cuda_generator` (`needs CUDA`; this host is CPU-only, so F12's CUDA draw path stays UNVERIFIED).
+- Full non-slow suite: `$env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH; .venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `276 passed, 1 skipped, 4 deselected in 63.20s` (EXIT=0).
+- No code or test was changed in this re-verification; `docs/TASKS.md` T5.5a/T5.5b stay ticked.
 
 ### F16 sweep preflight: FIR sync and environment — 2026-11-10 (zellij `attach`, pane `terminal_0`, login3)
 - Local HEAD, `origin/main` and FIR HEAD are identical: local `git rev-parse HEAD origin/main` -> `252fb3b8c6bda7cc5b2620853c8b2f09e2e92084` for both; FIR `cd ~/jncm_git && GIT_TERMINAL_PROMPT=0 git pull --ff-only && git rev-parse HEAD` -> `Already up to date.` / `252fb3b8c6bda7cc5b2620853c8b2f09e2e92084`. Nothing to push; the pull was a no-op. FIR `git status --short` shows only `?? data` (the pre-existing data symlink).
