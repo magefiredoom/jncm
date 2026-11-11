@@ -16,6 +16,8 @@ job that long would wait too long, and it must be chained into shorter chunks
 adds its stem as a run-id suffix, exactly as ``scripts/launch_phase.sh`` does
 (``configs/tinystories_lite.yaml`` -> ``gen_vq_ce_lite``), and only pilot
 records carrying that suffix are used, so a dev pilot never sizes a lite run.
+Tokenizer run ids are never suffixed (T5.6): the dev and lite configs share one
+``tok_vq_10k`` / ``tok_noisy_10k`` pair, so those rows keep their bare ids.
 
 Usage:
     python scripts/budget.py
@@ -76,6 +78,17 @@ def with_suffix(run_id: str, suffix: str) -> str:
     return f"{run_id}_{suffix}"
 
 
+def is_tokenizer(run_id: str) -> bool:
+    """Tokenizer runs are shared by the dev and lite configs (T5.6)."""
+    base = run_id[len("pilot_") :] if run_id.startswith("pilot_") else run_id
+    return base.startswith("tok_")
+
+
+def suffixed_run_id(run_id: str, suffix: str) -> str:
+    """The run id the launcher builds: tokenizer ids are never suffixed."""
+    return run_id if is_tokenizer(run_id) else with_suffix(run_id, suffix)
+
+
 def pilot_sec_per_step(results_dir: Path, pilot_id: str) -> float | None:
     """``sec_per_step`` of the last record of a pilot run, ``None`` if absent."""
     path = results_dir / pilot_id / "metrics.jsonl"
@@ -118,8 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     flagged: list[tuple[str, float]] = []
     measured: list[float] = []
     for phase, base_run, base_pilot, steps in RUNS:
-        run_id = with_suffix(base_run, suffix)
-        pilot_id = with_suffix(base_pilot, suffix)
+        run_id = suffixed_run_id(base_run, suffix)
+        pilot_id = suffixed_run_id(base_pilot, suffix)
         sec = pilot_sec_per_step(args.results, pilot_id)
         if sec is None:
             print(f"{phase:<5} {run_id:<27} {steps:>7} {'MISSING':>10} {'n/a':>7}")

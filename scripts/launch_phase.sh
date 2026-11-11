@@ -19,22 +19,30 @@
 # --config selects the YAML passed to every template through CONFIG (default:
 #   each template's dev config). The lite configs are
 #   configs/tinystories_lite.yaml (g0/g1) and configs/jepa_lite.yaml (g2).
-#   A non-dev config also suffixes every run id this kit builds with the config
-#   stem (configs/*_lite.yaml -> _lite): gen_vq_ce_dev becomes gen_vq_ce_lite,
-#   tok_vq_10k becomes tok_vq_10k_lite and pilot_gen_vq_ce becomes
-#   pilot_gen_vq_ce_lite, so dev and lite never share a run id, a checkpoint
-#   directory or a DONE file.
+#   A non-dev config also suffixes every generator/JEPA run id this kit builds
+#   with the config stem (configs/*_lite.yaml -> _lite): gen_vq_ce_dev becomes
+#   gen_vq_ce_lite and pilot_gen_vq_ce becomes pilot_gen_vq_ce_lite, so dev and
+#   lite never share a run id, a checkpoint directory or a DONE file. Tokenizer
+#   run ids are NEVER suffixed (T5.6): the tokenizer sections of the dev and
+#   lite configs are identical, so tok_vq_10k / tok_noisy_10k are shared.
 #
 # pilot: run ids pilot_*, 500 tokenizer / 300 generator / 200 JEPA steps,
 #   --time 00:20:00, GEN_PPL=1 on the generators (decoded samples plus Gen PPL
 #   through the offline GPT-2), eval with N_SAMPLES=32, N_SEEDS=1 and a single
-#   array task. It never touches a full run id.
+#   array task. It never touches a full run id. T5.6: a pilot reuses the real
+#   tokenizer (results/tok_vq_10k, results/tok_noisy_10k) whenever its DONE
+#   file exists, and submits the pilot tokenizer only when it is missing.
+#
+# Every run ends with a plan line: the number of jobs, the total requested
+#   GPU-hours (chunks x --time x 1 GPU), the micro-batch size of the config in
+#   play and the submission order.
 #
 # full: n_chunks = ceil(steps * sec_per_step / (0.9 * wall)); sec_per_step is
 #   the latest matching pilot results/<pilot>/metrics.jsonl value, else
 #   --sec_per_step; with neither the phase stops with an error. The default
 #   wall is 03:00:00: our fair-share is over-used, so the kit prefers short
-#   chunks that chain and resume (scripts/slurm/chain.sh).
+#   chunks that chain and resume (scripts/slurm/chain.sh). Tokenizer submission
+#   is skipped when results/tok_*_10k/DONE exists, for either config.
 #
 # After the eval arrays finish, merge each run:
 #   python scripts/run_eval.py --run_id <run> --merge
@@ -65,6 +73,17 @@ PILOT_N_SEEDS=1
 FULL_TOK_STEPS=10000
 FULL_GEN_STEPS=10000
 FULL_JEPA_STEPS=10000
+
+# T5.6: the tokenizers are shared by the dev and lite configs, so their run ids
+# are fixed and never carry the config suffix.
+TOK_VQ_RUN="tok_vq_10k"
+TOK_NOISY_RUN="tok_noisy_10k"
+PILOT_TOK_VQ_RUN="pilot_tok_vq"
+PILOT_TOK_NOISY_RUN="pilot_tok_noisy"
+
+# T5.6: the plan summary (jobs, GPU-hours, micro-batch, submission order).
+PLAN_CONFIG="configs/tinystories_dev.yaml"
+PLAN_ORDER=()
 
 JEPA_RUNS=(
   jepa_base_dev
@@ -187,13 +206,23 @@ base_id() {
 }
 
 pilot_id() {
-  # Dev run id -> its pilot counterpart (tok ids end in _10k, rest in _dev),
-  # carrying the config suffix so pilot ids split per config too.
+  # Dev run id -> its pilot counterpart (tok ids end in _10k, rest in _dev).
+  # Only generator/JEPA ids carry the config suffix; tokenizer ids do not.
   case "$1" in
-    tok_vq_10k) rid pilot_tok_vq ;;
-    tok_noisy_10k) rid pilot_tok_noisy ;;
+    "$TOK_VQ_RUN") printf '%s' "$PILOT_TOK_VQ_RUN" ;;
+    "$TOK_NOISY_RUN") printf '%s' "$PILOT_TOK_NOISY_RUN" ;;
     *) rid "pilot_${1%_dev}" ;;
   esac
+}
+
+select_tokenizer() {
+  # select_tokenizer <real_id> <pilot_id>: TOK_RUN is the finished real
+  # tokenizer when its DONE file exists, else the pilot id (T5.6).
+  if [[ -f "results/$1/DONE" ]]; then
+    TOK_RUN="$1"
+  else
+    TOK_RUN="$2"
+  fi
 }
 
 pilot_sec_per_step() {
@@ -233,8 +262,11 @@ compute_chunks() {
 
 start_chain() {
   # start_chain <script> <chunks> <export> [<dependency id>] [extra sbatch args...]
-  local script="$1" chunks="$2" export_spec="$3" dep="${4:-}" out=""
+  local script="$1" chunks="$2" export_spec="$3" dep="${4:-}" out="" run_label=""
   local args=(--export="$export_spec" --wall="$WALL" "${@:5}")
+  # T5.6: the plan summary counts jobs and GPU-hours in submission order.
+  run_label="$(printf '%s' "$export_spec" | sed -n 's/.*RUN_ID=\([^,]*\).*/\1/p')"
+  PLAN_ORDER+=("${script}|${run_label}|${chunks}")
   if [[ -n "$dep" ]]; then
     args+=(--dependency="afterany:${dep}")
   fi
@@ -253,6 +285,56 @@ dep_after_last() {
     printf '%s' "$LAST_ID"
   else
     printf '<LAST>'
+  fi
+}
+
+micro_batch_line() {
+  # micro_batch_line <config>: one line with the generator.train micro-batch.
+  local cfg="$1" batch="" accum="" line=""
+  if [[ ! -f "$cfg" ]]; then
+    printf 'micro-batch unknown (config %s not found)' "$cfg"
+    return 0
+  fi
+  line=$(awk '
+    /^[A-Za-z_][A-Za-z0-9_]*:/ { sec = $1; sub(/:$/, "", sec); blk = "" }
+    sec == "generator" && /^  [A-Za-z_][A-Za-z0-9_]*:/ { blk = $1; sub(/:$/, "", blk) }
+    sec == "generator" && blk == "train" && $1 == "batch_size:" { b = $2 }
+    sec == "generator" && blk == "train" && $1 == "grad_accum:" { g = $2 }
+    END { if (b != "" && g != "") print b, g }
+  ' "$cfg")
+  if [[ -z "$line" ]]; then
+    printf 'micro-batch unknown (no generator.train batch_size/grad_accum in %s)' "$cfg"
+    return 0
+  fi
+  read -r batch accum <<< "$line"
+  if ((accum < 1 || batch % accum != 0)); then
+    printf 'micro-batch INVALID (batch %s / grad_accum %s is not an integer in %s)' \
+      "$batch" "$accum" "$cfg"
+    return 0
+  fi
+  printf 'micro-batch %d (batch %s / grad_accum %s, %s)' \
+    "$((batch / accum))" "$batch" "$accum" "$cfg"
+}
+
+print_plan() {
+  # T5.6: jobs, requested GPU-hours, micro-batch size and submission order.
+  local jobs=0 entry script run_label chunks hours="" i=0
+  for entry in "${PLAN_ORDER[@]:-}"; do
+    [[ -z "$entry" ]] && continue
+    IFS='|' read -r script run_label chunks <<< "$entry"
+    jobs=$((jobs + chunks))
+  done
+  hours=$(awk -v j="$jobs" -v w="$WALL_SECONDS" 'BEGIN { printf "%.2f", j * w / 3600 }')
+  echo "== plan: ${jobs} job(s), ${hours} requested GPU-hour(s) (1 GPU x ${WALL} each)"
+  echo "   $(micro_batch_line "$PLAN_CONFIG")"
+  if ((jobs > 0)); then
+    echo "   submission order:"
+    for entry in "${PLAN_ORDER[@]:-}"; do
+      [[ -z "$entry" ]] && continue
+      IFS='|' read -r script run_label chunks <<< "$entry"
+      i=$((i + 1))
+      printf '     %d. %s %s (%s chunk(s))\n' "$i" "$script" "$run_label" "$chunks"
+    done
   fi
 }
 
@@ -320,20 +402,24 @@ require_checkpoint() {
 
 run_g0() {
   local tok_dep="" gen_dep=""
-  TOK_RUN="tok_vq_10k"
-  GEN_RUN="gen_vq_ce_dev"
+  LAUNCHED=0
+  GEN_RUN="$(rid gen_vq_ce_dev)"
   TOK_STEPS_N="$FULL_TOK_STEPS"
   GEN_STEPS_N="$FULL_GEN_STEPS"
   if [[ "$MODE" == "pilot" ]]; then
-    TOK_RUN="pilot_tok_vq"
-    GEN_RUN="pilot_gen_vq_ce"
+    GEN_RUN="$(rid pilot_gen_vq_ce)"
     TOK_STEPS_N="$PILOT_TOK_STEPS"
     GEN_STEPS_N="$PILOT_GEN_STEPS"
+    select_tokenizer "$TOK_VQ_RUN" "$PILOT_TOK_VQ_RUN"
+  else
+    TOK_RUN="$TOK_VQ_RUN"
   fi
-  TOK_RUN="$(rid "$TOK_RUN")"
-  GEN_RUN="$(rid "$GEN_RUN")"
   echo "== G0 ${MODE}: ${TOK_RUN} (vq tokenizer) -> ${GEN_RUN} (ce generator) -> eval"
-  launch_tok vq "$TOK_RUN" "$TOK_STEPS_N"
+  if [[ "$MODE" == "full" || "$TOK_RUN" != "$TOK_VQ_RUN" ]]; then
+    launch_tok vq "$TOK_RUN" "$TOK_STEPS_N"
+  else
+    echo "REUSE ${TOK_RUN}: results/${TOK_RUN}/DONE exists, no pilot tokenizer"
+  fi
   if ((LAUNCHED)); then
     tok_dep="$(dep_after_last)"
   fi
@@ -346,23 +432,26 @@ run_g0() {
 
 run_g1() {
   local tok_dep="" flow_dep="" regress_dep=""
-  TOK_RUN="tok_noisy_10k"
-  GEN_FLOW="gen_noisy_flow_dev"
-  GEN_REGRESS="gen_noisy_regress_dev"
+  LAUNCHED=0
+  GEN_FLOW="$(rid gen_noisy_flow_dev)"
+  GEN_REGRESS="$(rid gen_noisy_regress_dev)"
   TOK_STEPS_N="$FULL_TOK_STEPS"
   GEN_STEPS_N="$FULL_GEN_STEPS"
   if [[ "$MODE" == "pilot" ]]; then
-    TOK_RUN="pilot_tok_noisy"
-    GEN_FLOW="pilot_gen_noisy_flow"
-    GEN_REGRESS="pilot_gen_noisy_regress"
+    GEN_FLOW="$(rid pilot_gen_noisy_flow)"
+    GEN_REGRESS="$(rid pilot_gen_noisy_regress)"
     TOK_STEPS_N="$PILOT_TOK_STEPS"
     GEN_STEPS_N="$PILOT_GEN_STEPS"
+    select_tokenizer "$TOK_NOISY_RUN" "$PILOT_TOK_NOISY_RUN"
+  else
+    TOK_RUN="$TOK_NOISY_RUN"
   fi
-  TOK_RUN="$(rid "$TOK_RUN")"
-  GEN_FLOW="$(rid "$GEN_FLOW")"
-  GEN_REGRESS="$(rid "$GEN_REGRESS")"
   echo "== G1 ${MODE}: ${TOK_RUN} (noisy tokenizer) -> ${GEN_FLOW} + ${GEN_REGRESS} -> eval"
-  launch_tok noisy "$TOK_RUN" "$TOK_STEPS_N"
+  if [[ "$MODE" == "full" || "$TOK_RUN" != "$TOK_NOISY_RUN" ]]; then
+    launch_tok noisy "$TOK_RUN" "$TOK_STEPS_N"
+  else
+    echo "REUSE ${TOK_RUN}: results/${TOK_RUN}/DONE exists, no pilot tokenizer"
+  fi
   if ((LAUNCHED)); then
     tok_dep="$(dep_after_last)"
   fi
@@ -381,13 +470,15 @@ run_g1() {
 run_g2() {
   local i run full_run sets steps dep=""
   if [[ "$MODE" == "pilot" ]]; then
-    TOK_RUN="pilot_tok_noisy"
+    select_tokenizer "$TOK_NOISY_RUN" "$PILOT_TOK_NOISY_RUN"
+    if [[ "$TOK_RUN" == "$TOK_NOISY_RUN" ]]; then
+      echo "REUSE ${TOK_RUN}: results/${TOK_RUN}/DONE exists, no pilot tokenizer"
+    fi
     steps="$PILOT_JEPA_STEPS"
   else
-    TOK_RUN="tok_noisy_10k"
+    TOK_RUN="$TOK_NOISY_RUN"
     steps="$FULL_JEPA_STEPS"
   fi
-  TOK_RUN="$(rid "$TOK_RUN")"
   require_checkpoint "results/${TOK_RUN}/ckpt/latest.pt" \
     "run 'scripts/launch_phase.sh g1 ${MODE} --submit' first (it trains ${TOK_RUN})"
   base_label="${JEPA_RUNS[0]}"
@@ -427,10 +518,16 @@ run_g2() {
   done
 }
 
+if [[ "$PHASE" == "g2" ]]; then
+  PLAN_CONFIG="configs/jepa_dev.yaml"
+fi
+PLAN_CONFIG="${CONFIG:-$PLAN_CONFIG}"
+
 echo "launch_phase ${PHASE} ${MODE}: wall ${WALL}, config ${CONFIG:-template default}, run-id suffix ${SUFFIX:-none}, account ${SBATCH_ACCOUNT}, $([[ -n "$SUBMIT" ]] && echo submit || echo "dry-run (pass --submit)")"
 case "$PHASE" in
   g0) run_g0 ;;
   g1) run_g1 ;;
   g2) run_g2 ;;
 esac
+print_plan
 echo "Next: when the jobs finish, merge each run (python scripts/run_eval.py --run_id <run> --merge) and run python scripts/gate_report.py"

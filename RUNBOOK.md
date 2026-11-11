@@ -46,6 +46,15 @@ so it cannot poison `tok_vq_10k`, `gen_vq_ce_dev`, .... A pilot that cannot
 finish inside the 20-minute wall is itself a stop signal: fix the speed before
 the full run.
 
+A pilot trains its own tokenizer (`pilot_tok_vq` / `pilot_tok_noisy`) only when
+the real one is missing. Once `results/tok_vq_10k/DONE` or
+`results/tok_noisy_10k/DONE` exists, the g0/g1 pilots and their evals read
+`TOKENIZER=results/tok_vq_10k/ckpt/latest.pt` (or `tok_noisy_10k`), print
+`REUSE <run>`, and submit no tokenizer at all — with both G0a tokenizer runs
+finished, a g0/g1 pilot is the generator plus its eval. The same holds for the
+g2 pilot: it only falls back to `pilot_tok_noisy` when the noisy tokenizer is
+missing.
+
 | Phase | Pilot run ids | Eval |
 | --- | --- | --- |
 | g0 | `pilot_tok_vq`, `pilot_gen_vq_ce` | `pilot_gen_vq_ce` |
@@ -103,8 +112,14 @@ PPL belongs to its eval array, not the trainer). For g2 also require
 
 `n_chunks = ceil(steps * sec_per_step / (0.9 * wall))`, with `sec_per_step`
 from the latest matching pilot record and `--wall` defaulting to `03:00:00`.
-A tokenizer run that already has `DONE` is skipped. Without a pilot record and
-without `--sec_per_step` the launcher stops with an error.
+A tokenizer run that already has `DONE` is skipped, in either config.
+Without a pilot record and without `--sec_per_step` the launcher stops with an
+error.
+
+Every dry run ends with a plan block: the number of jobs, the total requested
+GPU-hours (chunks x `--time` x 1 GPU), the generator micro-batch size of the
+config in play (`batch_size / grad_accum`, 64 in the dev and lite configs) and
+the submission order, one numbered line per chain.
 
 ```bash
 cd ~/jncm
@@ -135,7 +150,7 @@ identical and the numbers stay comparable to the dev runs.
 
 | Phase | Config | Run ids |
 | --- | --- | --- |
-| g0, g1 | `configs/tinystories_lite.yaml` | `tok_vq_10k_lite`, `gen_vq_ce_lite`, `gen_noisy_flow_lite`, ... |
+| g0, g1 | `configs/tinystories_lite.yaml` | `gen_vq_ce_lite`, `gen_noisy_flow_lite`, ...; tokenizer `tok_vq_10k` is shared with dev |
 | g2 | `configs/jepa_lite.yaml` | `jepa_base_lite`, `jepa_no_vicreg_lite`, ... |
 
 Two ways to select it, both optional and both defaulting to the dev config:
@@ -144,20 +159,26 @@ Two ways to select it, both optional and both defaulting to the dev config:
 ```bash
 # one template by hand
 sbatch ... --export=ALL,RUN_ID=gen_vq_ce_lite,\\
-TOKENIZER=results/tok_vq_10k_lite/ckpt/latest.pt,\\
+TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,\\
 CONFIG=configs/tinystories_lite.yaml scripts/slurm/gen.sbatch
 # a whole phase through the kit
 scripts/launch_phase.sh g0 pilot --config configs/tinystories_lite.yaml
 python scripts/budget.py --config configs/tinystories_lite.yaml
 ```
 
-The suffix rule: when the config is not a dev config, every run id the kit
-builds carries the config stem as a suffix — `gen_vq_ce_dev` becomes
-`gen_vq_ce_lite`, `pilot_gen_vq_ce` becomes `pilot_gen_vq_ce_lite`, and ids
-without a `_dev` tail (`tok_vq_10k`) get it appended (`tok_vq_10k_lite`). Dev and
-lite therefore never share a run id, a `ckpt/` directory or a `DONE` file, and
-`budget.py` filters pilot records by the same suffix: a lite projection only
-uses lite pilots (everything else is `MISSING`, never a dev number).
+The suffix rule: when the config is not a dev config, every generator/JEPA run
+id the kit builds carries the config stem as a suffix — `gen_vq_ce_dev` becomes
+`gen_vq_ce_lite`, `pilot_gen_vq_ce` becomes `pilot_gen_vq_ce_lite`. Dev and lite
+therefore never share a generator run id, a `ckpt/` directory or a `DONE` file,
+and `budget.py` filters generator/JEPA pilot records by the same suffix: a lite
+projection only uses lite pilots for those rows (otherwise `MISSING`), never a
+dev number.
+
+Tokenizer run ids are never suffixed, because the tokenizer section of the dev
+and lite files is byte-identical (a test enforces it): both configs share
+`tok_vq_10k` / `tok_noisy_10k`, their checkpoints and their `DONE` file, so a
+lite full run skips the tokenizer exactly like a dev one and `budget.py`
+projects the tokenizer rows unsuffixed.
 
 ## 1. Syncing FIR
 

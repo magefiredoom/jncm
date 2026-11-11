@@ -62,7 +62,8 @@ generator:
     batch_size: 1024
     # T5.5a F13: equal micro-batches per optimizer step (losses are averaged);
     # VICReg statistics are computed per micro-batch.
-    grad_accum: 1
+    # T5.6: batch 1024 / grad_accum 16 = micro-batch 64 per forward pass.
+    grad_accum: 16
     eval_every: 500
     save_every: 5000
     save_milestones: true

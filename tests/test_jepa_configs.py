@@ -83,17 +83,20 @@ def test_jepa_smoke_is_cpu_scale_and_valid() -> None:
 
 
 def test_grad_accum_is_present_and_documents_per_micro_batch_vicreg() -> None:
-    """T5.5a F13: default 1 in every config, VICReg caveat in the JEPA ones."""
-    for path in (
-        "configs/smoke.yaml",
-        "configs/tinystories_dev.yaml",
-        "configs/jepa_smoke.yaml",
-        "configs/jepa_dev.yaml",
-    ):
+    """T5.5a F13 / T5.6: smoke 1, dev 16, lite 4; VICReg caveat in JEPA configs."""
+    expected = {
+        "configs/smoke.yaml": 1,
+        "configs/jepa_smoke.yaml": 1,
+        "configs/tinystories_dev.yaml": 16,
+        "configs/jepa_dev.yaml": 16,
+        "configs/tinystories_lite.yaml": 4,
+        "configs/jepa_lite.yaml": 4,
+    }
+    for path, accum in expected.items():
         cfg = load_config(Path(path))
-        assert cfg.generator.train.grad_accum == 1, path
-        assert "grad_accum: 1" in Path(path).read_text(encoding="utf-8"), path
-    for path in ("configs/jepa_smoke.yaml", "configs/jepa_dev.yaml"):
+        assert cfg.generator.train.grad_accum == accum, path
+        assert f"grad_accum: {accum}" in Path(path).read_text(encoding="utf-8"), path
+    for path in ("configs/jepa_smoke.yaml", "configs/jepa_dev.yaml", "configs/jepa_lite.yaml"):
         assert "per micro-batch" in Path(path).read_text(encoding="utf-8"), path
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -26,7 +27,7 @@ def _write_pilot(root: Path, pilot_id: str, sec_per_step: float) -> None:
 
 def _all_pilots(root: Path, sec_per_step: float, suffix: str = "") -> None:
     for _, _, pilot_id, _ in budget.RUNS:
-        _write_pilot(root, budget.with_suffix(pilot_id, suffix), sec_per_step)
+        _write_pilot(root, budget.suffixed_run_id(pilot_id, suffix), sec_per_step)
 
 
 def _run(root: Path) -> subprocess.CompletedProcess:
@@ -125,15 +126,17 @@ def test_missing_config_fails_loudly(tmp_path: Path) -> None:
 
 
 def test_config_suffix_matches_the_launch_kit() -> None:
-    """T5.5c: dev configs get no suffix, lite configs get 'lite'."""
+    """T5.5c/T5.6: dev gets no suffix, lite gets 'lite', tokenizers never."""
     assert budget.config_suffix(None) == ""
     assert budget.config_suffix(Path("configs/tinystories_dev.yaml")) == ""
     assert budget.config_suffix(Path("configs/jepa_dev.yaml")) == ""
     assert budget.config_suffix(Path("configs/tinystories_lite.yaml")) == "lite"
     assert budget.config_suffix(Path("configs/jepa_lite.yaml")) == "lite"
     assert budget.with_suffix("gen_vq_ce_dev", "lite") == "gen_vq_ce_lite"
-    assert budget.with_suffix("tok_vq_10k", "lite") == "tok_vq_10k_lite"
     assert budget.with_suffix("gen_vq_ce_dev", "") == "gen_vq_ce_dev"
+    assert budget.suffixed_run_id("tok_vq_10k", "lite") == "tok_vq_10k"
+    assert budget.suffixed_run_id("pilot_tok_noisy", "lite") == "pilot_tok_noisy"
+    assert budget.suffixed_run_id("gen_vq_ce_dev", "lite") == "gen_vq_ce_lite"
 
 
 def test_lite_config_uses_only_suffixed_pilots(tmp_path: Path) -> None:
@@ -180,7 +183,34 @@ def test_lite_projection_is_missing_without_lite_pilots(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "MISSING jepa_base_lite" in result.stdout
-    assert "TOTAL: 0.00 H100-hours over 0 run(s)" in result.stdout
+    # T5.6: the two tokenizer rows are shared with the dev config, so they are
+    # measured even without lite pilots: 2 x 2.78 H100-hours.
+    assert "TOTAL: 5.56 H100-hours over 2 run(s)" in result.stdout
+
+
+def test_lite_projection_keeps_the_tokenizer_rows_unsuffixed(tmp_path: Path) -> None:
+    """T5.6: only generator/JEPA rows carry the 'lite' suffix."""
+    _all_pilots(tmp_path, 1.0, "lite")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/budget.py",
+            "--results",
+            str(tmp_path),
+            "--config",
+            "configs/jepa_lite.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "tok_vq_10k_lite" not in result.stdout
+    assert "tok_noisy_10k_lite" not in result.stdout
+    assert re.search(r"^G0 +tok_vq_10k +10000 +1\.0000", result.stdout, re.M)
+    assert re.search(r"^G1 +tok_noisy_10k +10000 +1\.0000", result.stdout, re.M)
+    assert re.search(r"^G2 +jepa_base_lite ", result.stdout, re.M)
 
 
 def test_pilot_reader_ignores_records_without_the_field(tmp_path: Path) -> None:

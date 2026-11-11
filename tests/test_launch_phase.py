@@ -10,6 +10,7 @@ import shutil
 import subprocess
 
 import pytest
+import yaml
 
 LAUNCH = "scripts/launch_phase.sh"
 
@@ -40,11 +41,17 @@ pytestmark = pytest.mark.skipif(BASH is None, reason="no working bash on this ho
 def _fixture_repo(tmp_path: Path) -> Path:
     """Repo-shaped tree with its own scripts/ and results/."""
     root = tmp_path / "repo"
-    shutil.copytree(
-        "scripts", root / "scripts", ignore=shutil.ignore_patterns("__pycache__")
-    )
+    ignore = shutil.ignore_patterns("__pycache__")
+    shutil.copytree("scripts", root / "scripts", ignore=ignore)
+    shutil.copytree("configs", root / "configs", ignore=ignore)
     (root / "results").mkdir()
     return root
+
+
+def _done(root: Path, run_id: str) -> None:
+    directory = root / "results" / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "DONE").write_text("{}\n", encoding="utf-8")
 
 
 def _seed_pilot(root: Path, pilot_id: str, sec_per_step: float) -> None:
@@ -161,13 +168,13 @@ def test_g2_forwards_the_jepa_config(tmp_path: Path) -> None:
         (
             "g0",
             "configs/tinystories_lite.yaml",
-            {"pilot_tok_vq_lite", "pilot_gen_vq_ce_lite"},
+            {"pilot_tok_vq", "pilot_gen_vq_ce_lite"},
         ),
         (
             "g1",
             "configs/tinystories_lite.yaml",
             {
-                "pilot_tok_noisy_lite",
+                "pilot_tok_noisy",
                 "pilot_gen_noisy_flow_lite",
                 "pilot_gen_noisy_regress_lite",
             },
@@ -190,18 +197,22 @@ def test_dry_run_run_ids_follow_the_config(
     if config:
         assert "run-id suffix lite" in result.stdout
         assert not any(run.endswith("_dev") for run in ids), ids
-        assert "_lite/ckpt/latest.pt" in result.stdout
+        assert "/ckpt/latest.pt" in result.stdout
+        # T5.6: tokenizer ids never carry the config suffix.
+        assert not any("_lite" in run for run in ids if run.startswith("tok_")), ids
     else:
         assert "run-id suffix none" in result.stdout
         assert not any("_lite" in line for line in _sbatch_lines(result.stdout))
 
 
-def test_lite_full_run_uses_the_lite_pilot_record(tmp_path: Path) -> None:
-    """T5.5c: the chunk count comes from the suffixed pilot, not the dev one."""
+def test_lite_full_run_uses_the_lite_pilot_record_and_shared_tokenizer(
+    tmp_path: Path,
+) -> None:
+    """T5.5c/T5.6: generator chunks from the _lite pilot; tokenizer is shared."""
     root = _fixture_repo(tmp_path)
     _seed_pilot(root, "pilot_tok_vq", 8.0)
+    _seed_pilot(root, "pilot_tok_vq_lite", 8.0)
     _seed_pilot(root, "pilot_gen_vq_ce", 8.0)
-    _seed_pilot(root, "pilot_tok_vq_lite", 1.0)
     _seed_pilot(root, "pilot_gen_vq_ce_lite", 1.0)
 
     result = _run(root, ["g0", "full", "--config", "configs/tinystories_lite.yaml"])
@@ -209,13 +220,16 @@ def test_lite_full_run_uses_the_lite_pilot_record(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     tok = [line for line in _sbatch_lines(result.stdout) if "tok.sbatch" in line]
     gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
-    # ceil(10000 * 1.0 / (0.9 * 10800)) = 2 chunks, from the _lite pilots.
-    assert len(tok) == 2 and len(gen) == 2
-    assert "(pilot pilot_tok_vq_lite)" in result.stderr
-    assert "tok_vq_10k_lite" in tok[0]
+    # ceil(10000 * 8.0 / (0.9 * 10800)) = 9 tokenizer chunks (shared dev pilot),
+    # ceil(10000 * 1.0 / (0.9 * 10800)) = 2 generator chunks (the _lite pilot).
+    assert len(tok) == 9 and len(gen) == 2
+    assert "(pilot pilot_tok_vq)" in result.stderr
+    assert "(pilot pilot_gen_vq_ce_lite)" in result.stderr
+    assert "RUN_ID=tok_vq_10k" in tok[0]
     assert "gen_vq_ce_lite" in gen[0]
-    assert "TOKENIZER=results/tok_vq_10k_lite/ckpt/latest.pt" in gen[0]
-    assert "_dev" not in "".join(tok + gen)
+    assert "TOKENIZER=results/tok_vq_10k/ckpt/latest.pt" in gen[0]
+    assert "tok_vq_10k_lite" not in result.stdout
+    assert "_dev/ckpt" not in result.stdout
 
 
 def test_g2_pilot_lists_ablations_without_submitting_them(tmp_path: Path) -> None:
@@ -290,6 +304,24 @@ def test_full_without_pilot_or_sec_per_step_errors(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "--sec_per_step" in result.stderr
     assert not _sbatch_lines(result.stdout)
+
+
+def test_lite_full_run_skips_the_shared_finished_tokenizer(tmp_path: Path) -> None:
+    """T5.6: lite full runs skip the tokenizer when tok_*_10k/DONE exists."""
+    root = _fixture_repo(tmp_path)
+    _done(root, "tok_vq_10k")
+    _seed_pilot(root, "pilot_gen_vq_ce_lite", 1.0)
+
+    result = _run(root, ["g0", "full", "--config", "configs/tinystories_lite.yaml"])
+
+    assert result.returncode == 0, result.stderr
+    assert "SKIP tok_vq_10k" in result.stdout
+    assert not [line for line in _sbatch_lines(result.stdout) if "tok.sbatch" in line]
+    gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
+    assert len(gen) == 2
+    assert "gen_vq_ce_lite" in gen[0]
+    assert "TOKENIZER=results/tok_vq_10k/ckpt/latest.pt" in gen[0]
+    assert "tok_vq_10k_lite" not in result.stdout
 
 
 def test_full_g1_skips_a_finished_tokenizer(tmp_path: Path) -> None:
@@ -372,3 +404,174 @@ def test_rejects_bad_arguments(tmp_path: Path, args: list[str]) -> None:
 
     assert result.returncode == 2
     assert "ERROR" in result.stderr
+
+
+TOKENIZER_CASES = [
+    ("g0", "tok_vq_10k", "pilot_tok_vq"),
+    ("g1", "tok_noisy_10k", "pilot_tok_noisy"),
+]
+
+
+@pytest.mark.parametrize("phase,real,pilot", TOKENIZER_CASES)
+def test_pilot_submits_a_pilot_tokenizer_when_the_real_one_is_missing(
+    tmp_path: Path, phase: str, real: str, pilot: str
+) -> None:
+    """T5.6: without results/<real>/DONE the pilot trains its own tokenizer."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run(root, [phase, "pilot"])
+
+    assert result.returncode == 0, result.stderr
+    toks = [line for line in _sbatch_lines(result.stdout) if "tok.sbatch" in line]
+    assert len(toks) == 1
+    assert f"RUN_ID={pilot}" in toks[0]
+    assert "STEPS=500" in toks[0]
+    assert f"TOKENIZER=results/{pilot}/ckpt/latest.pt" in result.stdout
+    assert f"results/{real}/ckpt" not in result.stdout
+
+
+@pytest.mark.parametrize("phase,real,pilot", TOKENIZER_CASES)
+def test_pilot_reuses_a_finished_real_tokenizer(
+    tmp_path: Path, phase: str, real: str, pilot: str
+) -> None:
+    """T5.6: results/<real>/DONE means no pilot tokenizer and a real TOKENIZER."""
+    root = _fixture_repo(tmp_path)
+    _done(root, real)
+
+    result = _run(root, [phase, "pilot"])
+
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert not [line for line in _sbatch_lines(out) if "tok.sbatch" in line]
+    assert f"REUSE {real}" in out
+    assert pilot not in out
+    downstream = [
+        line
+        for line in _sbatch_lines(out)
+        if "gen.sbatch" in line or "eval.sbatch" in line
+    ]
+    assert downstream
+    assert all(f"TOKENIZER=results/{real}/ckpt/latest.pt" in line for line in downstream)
+    # No tokenizer chain upstream, so the generators wait for nothing; the eval
+    # still waits for its generator.
+    gens = [line for line in downstream if "gen.sbatch" in line]
+    assert gens and not any("--dependency" in line for line in gens)
+
+
+def test_lite_pilot_reuses_the_shared_real_tokenizer(tmp_path: Path) -> None:
+    """T5.6: a lite pilot reads the shared dev tokenizer, unsuffixed."""
+    root = _fixture_repo(tmp_path)
+    _done(root, "tok_vq_10k")
+
+    result = _run(root, ["g0", "pilot", "--config", "configs/tinystories_lite.yaml"])
+
+    assert result.returncode == 0, result.stderr
+    assert set(re.findall(r"RUN_ID=([^,\s]+)", result.stdout)) == {
+        "pilot_gen_vq_ce_lite"
+    }
+    assert "TOKENIZER=results/tok_vq_10k/ckpt/latest.pt" in result.stdout
+    assert "tok_vq_10k_lite" not in result.stdout
+
+
+def test_dev_and_lite_configs_share_the_tokenizer_section() -> None:
+    """T5.6: identical tokenizer sections are why tok_*_10k is shared."""
+    root = Path(__file__).resolve().parents[1]
+    pairs = [
+        ("configs/tinystories_dev.yaml", "configs/tinystories_lite.yaml"),
+        ("configs/jepa_dev.yaml", "configs/jepa_lite.yaml"),
+    ]
+    for dev, lite in pairs:
+        dev_cfg = yaml.safe_load((root / dev).read_text(encoding="utf-8"))
+        lite_cfg = yaml.safe_load((root / lite).read_text(encoding="utf-8"))
+        assert dev_cfg["tokenizer"] == lite_cfg["tokenizer"], lite
+
+
+def test_every_config_satisfies_batch_size_divisibility() -> None:
+    """T5.6: batch_size % grad_accum == 0, micro-batch 64 in dev and lite."""
+    root = Path(__file__).resolve().parents[1]
+    for path in sorted((root / "configs").glob("*.yaml")):
+        train = yaml.safe_load(path.read_text(encoding="utf-8"))["generator"]["train"]
+        batch, accum = train["batch_size"], train["grad_accum"]
+        assert accum >= 1, path.name
+        assert batch % accum == 0, path.name
+    expected = {
+        "tinystories_dev.yaml": 64,
+        "jepa_dev.yaml": 64,
+        "tinystories_lite.yaml": 64,
+        "jepa_lite.yaml": 64,
+    }
+    for name, micro in expected.items():
+        train = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))[
+            "generator"
+        ]["train"]
+        assert train["batch_size"] // train["grad_accum"] == micro, name
+
+
+def test_plan_reports_jobs_gpu_hours_micro_batch_and_order(tmp_path: Path) -> None:
+    """T5.6: the dry-run plan ends with jobs, GPU-hours, micro-batch and order."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run(root, ["g0", "pilot"])
+
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    # 3 pilot jobs x 00:20:00 = 1.00 requested GPU-hour.
+    assert "3 job(s), 1.00 requested GPU-hour(s)" in out
+    assert (
+        "micro-batch 64 (batch 1024 / grad_accum 16, configs/tinystories_dev.yaml)"
+        in out
+    )
+    order = [
+        line.strip()
+        for line in out.splitlines()
+        if re.match(r"\d+\. scripts/slurm/", line.strip())
+    ]
+    assert len(order) == 3, order
+    assert order[0].startswith("1. scripts/slurm/tok.sbatch pilot_tok_vq")
+    assert order[1].startswith("2. scripts/slurm/gen.sbatch pilot_gen_vq_ce")
+    assert order[2].startswith("3. scripts/slurm/eval.sbatch pilot_gen_vq_ce")
+
+
+def test_plan_prints_the_micro_batch_of_the_selected_config(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    lite = _run(root, ["g0", "pilot", "--config", "configs/tinystories_lite.yaml"])
+    jepa = _run(root, ["g2", "pilot", "--config", "configs/jepa_lite.yaml"])
+
+    assert (
+        "micro-batch 64 (batch 256 / grad_accum 4, configs/tinystories_lite.yaml)"
+        in lite.stdout
+    )
+    assert (
+        "micro-batch 64 (batch 256 / grad_accum 4, configs/jepa_lite.yaml)"
+        in jepa.stdout
+    )
+
+
+def test_scripts_run_by_other_scripts_are_executable_in_the_index() -> None:
+    """T5.6: a script another script launches by path must be mode 100755."""
+    root = Path(__file__).resolve().parents[1]
+    index = subprocess.run(
+        ["git", "ls-files", "-s", "--", "scripts"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if index.returncode != 0 or not index.stdout.strip():
+        pytest.skip("git index unavailable (not a checkout)")
+    modes: dict[str, str] = {}
+    for line in index.stdout.splitlines():
+        meta, _, path = line.partition("\t")
+        modes[path] = meta.split()[0]
+    shell_script = re.compile(r"scripts/[A-Za-z0-9_./-]+\.sh")
+    referenced: set[str] = set()
+    for path in sorted((root / "scripts").rglob("*")):
+        if path.is_file() and path.suffix in {".sh", ".sbatch", ".py"}:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            referenced.update(shell_script.findall(text))
+    referenced &= set(modes)
+    assert referenced, "no shell-script invocation found under scripts/"
+    for path in sorted(referenced):
+        assert modes[path] == "100755", f"{path} is {modes[path]} in the git index"
+    for path in ("scripts/launch_phase.sh", "scripts/slurm/chain.sh"):
+        assert modes.get(path) == "100755", path

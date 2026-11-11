@@ -54,7 +54,7 @@ def test_dev_configs_have_dense_milestones() -> None:
 
 
 def test_lite_configs_scale_only_the_generator() -> None:
-    """T5.5b: H 512, 8 layers/heads, batch 256; every other field as dev."""
+    """T5.5b/T5.6: H 512, 8 layers/heads, batch 256, micro-batch still 64."""
     pairs = [
         ("configs/tinystories_lite.yaml", "configs/tinystories_dev.yaml"),
         ("configs/jepa_lite.yaml", "configs/jepa_dev.yaml"),
@@ -66,10 +66,14 @@ def test_lite_configs_scale_only_the_generator() -> None:
         assert lite.generator.n_layers == 8
         assert lite.generator.n_heads == 8
         assert lite.generator.train.batch_size == 256
+        # T5.6: grad_accum scales with batch_size, so both keep micro-batch 64.
+        assert lite.generator.train.grad_accum == 4
+        assert dev.generator.train.grad_accum == 16
         lite.generator.H = dev.generator.H
         lite.generator.n_layers = dev.generator.n_layers
         lite.generator.n_heads = dev.generator.n_heads
         lite.generator.train.batch_size = dev.generator.train.batch_size
+        lite.generator.train.grad_accum = dev.generator.train.grad_accum
         assert lite == dev, lite_path
 
 
