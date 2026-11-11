@@ -11,6 +11,11 @@ Reads the last metrics record carrying ``acc_full`` from
      that is alive) and noisy ``eff_rank / 7`` (effective rank of the level
      codes at d_k = 8, normalised so 1.0 is a fully used space).
 
+Paper polish: 7.0 x 2.8 in at 300 dpi, the C2 legend sits outside the data
+area (below the right axis), the dotted reference line is the level-1 cap
+(512 codes / 4096 = 0.125) and is labelled in the legend, and the vq level-1
+point is drawn hollow.
+
 Saves ``figures/fig_c_tokenizers.png`` and prints the same numbers as a
 markdown table, so the table can be pasted into a report.
 
@@ -35,6 +40,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 VQ_RUN = "tok_vq_10k"
 NOISY_RUN = "tok_noisy_10k"
 NOISY_RANK_SCALE = 7.0
+# Level 1 of the vq tokenizer keeps 512 codes out of a 4096-entry code space.
+LEVEL1_CAP = 512.0 / 4096.0
+LEVEL1_CAP_LABEL = "level-1 cap (512 codes / 4096)"
+FIG_SIZE = (7.0, 2.8)
+DPI = 300
 
 
 def last_record(path: Path, key: str = "acc_full") -> dict:
@@ -105,22 +115,42 @@ def plot_levels(vq: dict, noisy: dict, out: Path) -> Path:
         raise ValueError("neither vq codebook_usage nor noisy eff_rank is present")
 
     levels = list(range(1, len(vq_acc) + 1))
-    fig, (left, right) = plt.subplots(1, 2, figsize=(11.0, 4.2))
+    fig, (left, right) = plt.subplots(1, 2, figsize=FIG_SIZE, layout="constrained")
 
-    left.plot(levels, vq_acc, "o-", color="#1f77b4", label=f"vq ({VQ_RUN})")
-    left.plot(levels, noisy_acc, "s--", color="#d62728", label=f"noisy ({NOISY_RUN})")
-    left.set_title("C1  cumulative accuracy per level")
-    left.set_xlabel("level (1 = coarsest)")
-    left.set_ylabel("acc_cum (exact-token accuracy)")
-    left.set_ylim(0.0, 1.05)
+    left.plot(levels, vq_acc, "o-", color="#1f77b4", label=f"vq ({VQ_RUN})",
+              markersize=4)
+    left.plot(levels, noisy_acc, "s--", color="#d62728",
+              label=f"noisy ({NOISY_RUN})", markersize=4)
+    # Hollow marker on the vq level-1 point (coarsest level, the 0.125 cap).
+    left.plot(
+        levels[0],
+        vq_acc[0],
+        marker="o",
+        markersize=6,
+        markerfacecolor="none",
+        markeredgecolor="#1f77b4",
+        markeredgewidth=1.2,
+        linestyle="none",
+        zorder=5,
+    )
+    left.set_title("C1  cumulative accuracy per level", fontsize=8)
+    left.set_xlabel("level (1 = coarsest)", fontsize=7)
+    left.set_ylabel("acc_cum (exact-token accuracy)", fontsize=7)
+    # Headroom above 1.0 keeps the per-point labels off the top spine.
+    left.set_ylim(0.0, 1.12)
+    left.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
     left.grid(alpha=0.3)
-    left.legend(loc="lower right")
+    left.tick_params(labelsize=6)
+    left.legend(loc="lower right", fontsize=5.5, frameon=False)
     for level, value in enumerate(vq_acc, start=1):
-        left.annotate(f"{value:.3f}", (level, value), fontsize=6, xytext=(0, 5),
+        left.annotate(f"{value:.3f}", (level, value), fontsize=4.5, xytext=(0, 4),
                       textcoords="offset points", ha="center")
 
+    right.axhline(LEVEL1_CAP, color="grey", linestyle=":", linewidth=1,
+                  label=LEVEL1_CAP_LABEL)
     if vq_usage is not None:
-        right.plot(levels, vq_usage, "o-", color="#1f77b4", label="vq codebook_usage")
+        right.plot(levels, vq_usage, "o-", color="#1f77b4",
+                   label="vq codebook_usage", markersize=4)
     if noisy_rank is not None:
         right.plot(
             levels,
@@ -128,22 +158,31 @@ def plot_levels(vq: dict, noisy: dict, out: Path) -> Path:
             "s--",
             color="#d62728",
             label=f"noisy eff_rank / {NOISY_RANK_SCALE:.0f}",
+            markersize=4,
         )
-    right.set_title("C2  level diagnostics")
-    right.set_xlabel("level (1 = coarsest)")
-    right.set_ylabel("fraction of the level code space used")
-    right.set_ylim(0.0, 1.05)
+    right.set_title("C2  level diagnostics", fontsize=8)
+    right.set_xlabel("level (1 = coarsest)", fontsize=7)
+    right.set_ylabel("fraction of the level code space used", fontsize=7)
+    right.set_ylim(0.0, 1.08)
+    right.set_yticks([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
     right.grid(alpha=0.3)
-    right.legend(loc="lower left")
-    right.axhline(0.1, color="grey", linestyle=":", linewidth=1,
-                  label="dead-code reference 0.1")
+    right.tick_params(labelsize=6)
+    # Legend outside the data area: below the C2 axis, two columns.
+    right.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.32),
+        ncol=2,
+        fontsize=5.5,
+        frameon=False,
+    )
 
     fig.suptitle(
-        f"Figure C: tokenizers at step {vq.get('step')} (vq) / {noisy.get('step')} (noisy)"
+        f"Figure C: tokenizers at step {vq.get('step')} (vq) / "
+        f"{noisy.get('step')} (noisy)",
+        fontsize=7,
     )
-    fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=DPI)
     plt.close(fig)
     return out
 

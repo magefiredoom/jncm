@@ -24,6 +24,13 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 
 ## VERIFIED (command + last lines of output)
 
+### Figure C paper polish — VERIFIED 2026-11-11
+- `scripts/plot_tokenizer_levels.py`: figsize 7.0 x 2.8 in via module constants `FIG_SIZE`/`DPI` (300), constrained layout; C2 legend moved outside the data area (`bbox_to_anchor=(0.5, -0.32)`, below the right axis, two columns, frame off); the dotted reference is now `LEVEL1_CAP = 512/4096 = 0.125` labelled `level-1 cap (512 codes / 4096)` and it appears in the legend (it did not before: `axhline` was drawn after `legend`); the vq level-1 point carries a hollow marker overlay (`markerfacecolor="none"`, zorder 5); C1 got headroom (`ylim 0..1.12`, ticks 0..1.0) and 4.5 pt point labels so the level 9-12 labels no longer sit on the top spine, and C2 `ylim 0..1.08`.
+- `.venv/Scripts/python.exe scripts/plot_tokenizer_levels.py` -> `wrote figures\fig_c_tokenizers.png`, `records: tok_vq_10k step 10000, tok_noisy_10k step 10000`, `PLOT_EXIT=0`; the printed 12-row table is identical to the T5.5c one above (same records, same numbers).
+- PNG check: `size (2100, 840) dpi (299.9994, 299.9994)` = 7.0 x 2.8 in at 300 dpi, 148,314 bytes. The rendered image was read back and inspected: legend fully below the C2 axes, cap line at 0.125 above the level-1 vq point (0.1042), hollow level-1 vq marker visible, no clipped text at the margins.
+- Fixture tests: `.venv/Scripts/python.exe -m pytest -x -q tests/test_plot_tokenizer_levels.py` -> `6 passed in 1.27s`, `PYTEST_EXIT=0` (no test was changed).
+- Module length 251 lines (< 400). The full non-slow suite was not re-run: only this one script's rendering changed.
+
 ### FIR sync, DONE backfill and pilot dry runs — VERIFIED 2026-11-11 (zellij `attach`, pane `terminal_0`, login2)
 - Channel: `hostname -f` -> `login2.int.fir.alliancecan.ca`; `echo ACC=$SBATCH_ACCOUNT` -> `ACC=def-cheng23`.
 - Sync: `cd ~/jncm_git && git pull --ff-only` -> `Already up to date.`, `RC=0`; `git rev-parse HEAD` -> `e43ba47fe2a5f440e8cce4221c8bf4081cd171a9` = local HEAD; `git status --short` -> empty.
