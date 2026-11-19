@@ -4,8 +4,9 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-4
-#SBATCH --time=HH:MM:SS
-# TODO(placeholder): wall clock -- replace HH:MM:SS above before submitting.
+#SBATCH --time=01:00:00
+# Wall clock: 01:00:00 is only a valid default; chain.sh passes --time=<wall>,
+# and a manual sbatch overrides it on the command line (e.g. --time=03:00:00).
 # TODO(placeholder): array range -- 0-4 matches N_SEEDS=5 (one task per seed).
 #   Widen or narrow it together with N_SEEDS.
 # TODO(placeholder): GPU type -- --gres=gpu:1 asks for one generic GPU; add a

@@ -36,7 +36,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 | g2 | lite | `pilot_jepa_base_lite` 3566098; eval 3566101 | PENDING (Priority) |
 
 - 20 polls between 23:24 and 23:43: `rem=16` every time; `squeue -j 3566052` reason `Priority`; `sprio` ranks ~1.14M. The user's fair-share is over-used, so none started inside the polling window. No metrics exist, so `RUNBOOK.md` §0.1 cannot be applied and `scripts/budget.py` reports `MISSING <run> (pilot <pilot>): no sec_per_step` for every dev and lite run (`TOTAL 0.00 H100-hours`). Nothing was cancelled.
-- Worktree-only patches on FIR (uncommitted, `git status` shows them): `scripts/slurm/{gen,eval,jepa}.sbatch` `#SBATCH --time=HH:MM:SS` -> `00:20:00`. Slurm parses the header before the command line, so `--time=00:20:00` alone fails with `sbatch: error: Invalid --time specification`; `tok.sbatch` already carries `12:00:00` and needed no patch. The repo still has the invalid placeholder in those three templates.
+- Worktree-only patches on FIR (uncommitted, `git status` shows them): `scripts/slurm/{gen,eval,jepa}.sbatch` `#SBATCH --time=HH:MM:SS` -> `00:20:00`. Slurm parses the header before the command line, so `--time=00:20:00` alone fails with `sbatch: error: Invalid --time specification`; `tok.sbatch` already carries `12:00:00` and needed no patch. Fixed in the repo 2026-11-19 (valid `01:00:00` default in all four affected templates); the FIR worktree patches must be discarded before the next pull (see "Next 3 steps").
 
 ## VERIFIED (command + last lines of output)
 
@@ -587,13 +587,13 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - **T4.1 placeholders — every one of them (nothing is guessed in the scripts):**
   - Account: pass `--account="$SBATCH_ACCOUNT"` on the sbatch command line (or let your submit wrapper read `$SLURM_ACCOUNT`); no account appears in any of the three files.
   - Partition: pass `--partition="$SBATCH_PARTITION"` on the sbatch command line; no partition appears in any file.
-  - Wall clock: `#SBATCH --time=HH:MM:SS` is invalid on purpose in `prep.sbatch:5`, `tok.sbatch:6`, `gen.sbatch:6` (`TODO(placeholder)` at lines 6, 7, 7). Replace each with a real limit.
+  - Wall clock: resolved 2026-11-19. `prep`, `gen`, `eval` and `jepa.sbatch` carry a valid default `#SBATCH --time=01:00:00` (`tok.sbatch` keeps `12:00:00`); `chain.sh` always passes `--time=<wall>`, and a manual sbatch overrides on the command line. `tests/test_sbatch_time.py` fails on any invalid or placeholder header.
   - GPU type: `tok.sbatch` (`#SBATCH --gres=gpu:1`, line 5, TODO at line 8) and `gen.sbatch` (same, line 5, TODO at line 8) ask for one generic GPU. Add a type only if FIR requires one. `prep.sbatch` requests no GPU (CPU-only numpy/tokenizers) — that is not a missing placeholder.
   - Modules: no `module load` line exists (TODO at `prep.sbatch:7`, `tok.sbatch:10`, `gen.sbatch:10`). Add your site's.
   - Venv: all three source `.venv/bin/activate` at the repo root and exit 1 if it is absent (TODO at `prep.sbatch:9`, `tok.sbatch:12`, `gen.sbatch:12`); create it per "Environment" below or edit the path.
   - `prep.sbatch` must reach the Hugging Face Hub (internet-enabled partition or a login node): it deliberately does not set `HF_*_OFFLINE` (Q9). `tok.sbatch` and `gen.sbatch` set all three offline variables.
   - Submit forms: `RUNBOOK.md` §2–§3 carries the exact, current ones (account, `--gres=gpu:h100:1`, `--time=<WALL_CLOCK>`, `HEAD`/`RUN_ID`/`TOKENIZER` inside `--export=ALL,...`). `prep.sbatch` is only needed if the data are ever rebuilt; the local `data/tinystories` is already prepared.
-  - **T4.2 `eval.sbatch` placeholders:** wall clock (`--time=HH:MM:SS`, TODO), array range (`--array=0-4`, TODO, keep equal to `N_SEEDS`), GPU type (`--gres=gpu:1`, TODO), modules (TODO), venv (sources `.venv/bin/activate`, TODO). Exact submit form plus the `--merge` and `plot_curves.py` steps: `RUNBOOK.md` §2.2 (Phase 1: §3).
+  - **T4.2 `eval.sbatch` placeholders:** wall clock (default `01:00:00` since 2026-11-19), array range (`--array=0-4`, TODO, keep equal to `N_SEEDS`), GPU type (`--gres=gpu:1`, TODO), modules (TODO), venv (sources `.venv/bin/activate`, TODO). Exact submit form plus the `--merge` and `plot_curves.py` steps: `RUNBOOK.md` §2.2 (Phase 1: §3).
 
 ## Environment
 - Python / torch: Python 3.13.7, torch 2.15.0+cpu (CUDA unavailable on this host); numpy 2.5.4, pytest 9.2.0.
@@ -619,7 +619,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 ## Next 3 steps
 1. Wait for the 16 pilot jobs (see "FIR jobs"); poll with `squeue -u $USER | grep jncm`. They are queued behind fair-share, so the first action next session is another bounded poll, not a resubmission.
 2. Once they finish, apply `RUNBOOK.md` §0.1 (all COMPLETED 0:0, `data_source real`, finite losses, `gen_ppl` present, samples decode, `pairwise_agree` on flow+regress, positive `sec_per_step`), then `scripts/budget.py` and `--config configs/tinystories_lite.yaml` for the projected full-run H100-hours, and paste the verdicts into the Results log.
-3. Human: replace `#SBATCH --time=HH:MM:SS` in `scripts/slurm/{gen,eval,jepa}.sbatch` with real limits in git (the FIR worktree already carries `00:20:00` uncommitted), then decide on the F16 sweep (`corr_p080|p050|p030`, `SETS="generator.corrupt.p_first=..."`).
+3. Human, on FIR before the next `git pull --ff-only` in `~/jncm_git`: discard the three worktree patches (`git checkout -- scripts/slurm/gen.sbatch scripts/slurm/eval.sbatch scripts/slurm/jepa.sbatch`), because the repo now carries a valid `01:00:00` header and the pull would otherwise refuse to overwrite them. Then decide on the F16 sweep (`corr_p080|p050|p030`, `SETS="generator.corrupt.p_first=..."`).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.

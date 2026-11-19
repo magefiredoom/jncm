@@ -2,8 +2,9 @@
 #SBATCH --job-name=jncm_prep
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --time=HH:MM:SS
-# TODO(placeholder): wall clock -- replace HH:MM:SS above before submitting.
+#SBATCH --time=01:00:00
+# Wall clock: 01:00:00 is only a valid default; chain.sh passes --time=<wall>,
+# and a manual sbatch overrides it on the command line (e.g. --time=03:00:00).
 # TODO(placeholder): modules -- add 'module load ...' lines if your cluster
 #   needs them. None are guessed here.
 # TODO(placeholder): venv -- this script sources .venv/bin/activate at the repo
