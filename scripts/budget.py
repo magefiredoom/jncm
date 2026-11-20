@@ -94,12 +94,17 @@ def pilot_sec_per_step(results_dir: Path, pilot_id: str) -> float | None:
     path = results_dir / pilot_id / "metrics.jsonl"
     if not path.is_file():
         return None
-    value: object = None
+    wall: object = None
+    train: object = None
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
-        value = record.get("sec_per_step")
+        wall = record.get("sec_per_step", wall)
+        train = record.get("train_sec_per_step", train)
+    # T5.7 m1: the training step alone; wall time includes diagnostics, Gen PPL
+    # and checkpoint saves and is what pilots from before T5.7 carry.
+    value = train if isinstance(train, (int, float)) else wall
     if not isinstance(value, (int, float)):
         return None
     return float(value)
@@ -120,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
     suffix = config_suffix(args.config)
     print("== jncm budget projection (H100-hours = steps x pilot sec_per_step / 3600)")
+    print("sec/step: train_sec_per_step (training step only) when the pilot has it, else wall sec_per_step")
     config_label = (
         args.config.as_posix() if args.config is not None else "template defaults (dev)"
     )

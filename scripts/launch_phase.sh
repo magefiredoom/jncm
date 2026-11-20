@@ -37,9 +37,15 @@
 #   GPU-hours (chunks x --time x 1 GPU), the micro-batch size of the config in
 #   play and the submission order.
 #
-# full: n_chunks = ceil(steps * sec_per_step / (0.9 * wall)); sec_per_step is
-#   the latest matching pilot results/<pilot>/metrics.jsonl value, else
-#   --sec_per_step; with neither the phase stops with an error. The default
+# full: a chunk advances in whole resume intervals (generator/JEPA: 10% of the
+#   steps, tokenizer: 5000 steps): intervals_per_chunk = floor(0.9 * wall /
+#   (interval * sec_per_step)), n_chunks = ceil(steps / (interval *
+#   intervals_per_chunk)). One interval that does not fit into 0.9 * wall stops
+#   the phase with an error (the chain could never reach its next checkpoint).
+#   sec_per_step is train_sec_per_step (training step only) or, for pilots that
+#   predate it, sec_per_step, from the latest matching pilot
+#   results/<pilot>/metrics.jsonl, else --sec_per_step; with none of them the
+#   phase stops with an error. The default
 #   wall is 03:00:00: our fair-share is over-used, so the kit prefers short
 #   chunks that chain and resume (scripts/slurm/chain.sh). Tokenizer submission
 #   is skipped when results/tok_*_10k/DONE exists, for either config.
@@ -73,6 +79,14 @@ PILOT_N_SEEDS=1
 FULL_TOK_STEPS=10000
 FULL_GEN_STEPS=10000
 FULL_JEPA_STEPS=10000
+
+# T5.7 B1: a chunk keeps progress only up to its last resume point. Generator and
+# JEPA trainers write latest.pt at every milestone (the configs use a 10% grid);
+# the tokenizer trainer writes it every train.save_every steps. compute_chunks
+# therefore advances a chunk in whole resume intervals.
+# tests/test_launch_phase.py ties both constants to the shipped configs.
+RESUME_FRACTION="0.1"
+TOK_RESUME_STEPS=5000
 
 # T5.6: the tokenizers are shared by the dev and lite configs, so their run ids
 # are fixed and never carry the config suffix.
@@ -226,27 +240,37 @@ select_tokenizer() {
 }
 
 pilot_sec_per_step() {
-  # Latest sec_per_step of a pilot run, empty when it has not been measured.
-  local path="results/$1/metrics.jsonl" value=""
+  # pilot_sec_per_step <pilot id>: prints "<field> <value>" from the pilot's
+  # metrics, preferring train_sec_per_step (the training step only, T5.7 m1)
+  # over sec_per_step (wall time including diagnostics, Gen PPL and saves, the
+  # only field pilots from before T5.7 carry). Prints nothing when neither exists.
+  local path="results/$1/metrics.jsonl" field="" value=""
   if [[ -f "$path" ]]; then
-    value=$(grep -o '"sec_per_step"[[:space:]]*:[[:space:]]*[0-9.eE+-]*' "$path" \
-      | tail -n 1 | sed -E 's/.*:[[:space:]]*//' || true)
+    for field in train_sec_per_step sec_per_step; do
+      value=$(grep -o "\"${field}\"[[:space:]]*:[[:space:]]*[0-9.eE+-]*" "$path"         | tail -n 1 | sed -E 's/.*:[[:space:]]*//' || true)
+      if [[ -n "$value" ]]; then
+        printf '%s %s' "$field" "$value"
+        return 0
+      fi
+    done
   fi
-  printf '%s' "$value"
+  return 0
 }
 
 CHUNKS=1
 compute_chunks() {
-  # compute_chunks <run_id> <steps>: sets CHUNKS for the current mode.
-  local run="$1" steps="$2" pilot="" sec="" source=""
+  # compute_chunks <run_id> <steps> <tok|gen>: sets CHUNKS for the current mode.
+  local run="$1" steps="$2" kind="$3" pilot="" measured="" field="" sec="" source="" plan="" tag="" interval="" per=""
   CHUNKS=1
   if [[ "$MODE" == "pilot" ]]; then
     return 0
   fi
   pilot="$(pilot_id "$(base_id "$run")")"
-  sec="$(pilot_sec_per_step "$pilot")"
+  measured="$(pilot_sec_per_step "$pilot")"
   source="pilot ${pilot}"
-  if [[ -z "$sec" ]]; then
+  if [[ -n "$measured" ]]; then
+    read -r field sec <<< "$measured"
+  else
     if [[ -z "$CLI_SEC" ]]; then
       echo "ERROR: no sec_per_step in results/${pilot}/metrics.jsonl for ${run}" >&2
       echo "       and no --sec_per_step; run the pilot first" >&2
@@ -255,9 +279,39 @@ compute_chunks() {
     sec="$CLI_SEC"
     source="--sec_per_step"
   fi
-  CHUNKS=$(awk -v steps="$steps" -v sps="$sec" -v wall="$WALL_SECONDS" \
-    'BEGIN { raw = steps * sps / (0.9 * wall); n = int(raw); if (n < raw) n += 1; if (n < 1) n = 1; printf "%d", n }')
-  echo "  ${run}: ${steps} steps x ${sec} s/step, 0.9 x ${WALL} -> ${CHUNKS} chunk(s) (${source})" >&2
+  plan=$(awk -v steps="$steps" -v sps="$sec" -v wall="$WALL_SECONDS" -v kind="$kind"     -v frac="$RESUME_FRACTION" -v tok="$TOK_RESUME_STEPS" '
+    BEGIN {
+      if (kind == "tok") {
+        interval = tok
+        if (interval > steps) interval = steps
+      } else {
+        x = steps * frac - 1e-9
+        interval = int(x)
+        if (interval < x) interval += 1
+      }
+      if (interval < 1) interval = 1
+      per = interval * sps
+      k = int(0.9 * wall / per)
+      if (k < 1) {
+        printf "ERR %d %.0f", interval, per
+        exit
+      }
+      progress = interval * k
+      n = int(steps / progress)
+      if (n * progress < steps) n += 1
+      if (n < 1) n = 1
+      printf "OK %d %d", n, interval
+    }')
+  read -r tag CHUNKS interval <<< "$plan"
+  if [[ "$tag" == "ERR" ]]; then
+    per="$interval"
+    interval="$CHUNKS"
+    echo "ERROR: ${run}: one resume interval is ${interval} steps x ${sec} s/step = ${per} s," >&2
+    echo "       more than 0.9 x ${WALL}; a chunk would never reach its next checkpoint." >&2
+    echo "       Raise --wall (or measure a smaller sec_per_step) and run again." >&2
+    exit 1
+  fi
+  echo "  ${run}: ${steps} steps x ${sec} s/step ${field:+[${field}] }, resume every ${interval} steps, 0.9 x ${WALL} -> ${CHUNKS} chunk(s) (${source})" >&2
 }
 
 start_chain() {
@@ -347,7 +401,7 @@ launch_tok() {
     LAST_ID=""
     return 0
   fi
-  compute_chunks "$run" "$steps"
+  compute_chunks "$run" "$steps" tok
   export_spec="ALL,QUANT=${quant},STEPS=${steps},RUN_ID=${run}"
   if [[ -n "$CONFIG" ]]; then
     export_spec+=",CONFIG=${CONFIG}"
@@ -367,7 +421,7 @@ launch_gen() {
   if [[ "$MODE" == "pilot" ]]; then
     export_spec+=",GEN_PPL=1"
   fi
-  compute_chunks "$run" "$steps"
+  compute_chunks "$run" "$steps" gen
   start_chain scripts/slurm/gen.sbatch "$CHUNKS" "$export_spec" "$dep"
 }
 
@@ -503,7 +557,7 @@ run_g2() {
     if [[ -n "$sets" ]]; then
       echo "  SETS=\"${sets}\""
     fi
-    compute_chunks "$full_run" "$steps"
+    compute_chunks "$full_run" "$steps" gen
     export_spec="ALL,RUN_ID=${run},STEPS=${steps},TOKENIZER=results/${TOK_RUN}/ckpt/latest.pt"
     if [[ -n "$CONFIG" ]]; then
       export_spec+=",CONFIG=${CONFIG}"

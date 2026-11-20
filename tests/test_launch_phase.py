@@ -54,12 +54,20 @@ def _done(root: Path, run_id: str) -> None:
     (directory / "DONE").write_text("{}\n", encoding="utf-8")
 
 
-def _seed_pilot(root: Path, pilot_id: str, sec_per_step: float) -> None:
+def _seed_pilot(
+    root: Path,
+    pilot_id: str,
+    sec_per_step: float,
+    train_sec_per_step: float | None = None,
+) -> None:
     directory = root / "results" / pilot_id
     directory.mkdir(parents=True, exist_ok=True)
+    last = {"step": 2, "sec_per_step": sec_per_step}
+    if train_sec_per_step is not None:
+        last["train_sec_per_step"] = train_sec_per_step
     lines = [
         json.dumps({"step": 1, "sec_per_step": sec_per_step / 2}),
-        json.dumps({"step": 2, "sec_per_step": sec_per_step}),
+        json.dumps(last),
     ]
     (directory / "metrics.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -210,8 +218,8 @@ def test_lite_full_run_uses_the_lite_pilot_record_and_shared_tokenizer(
 ) -> None:
     """T5.5c/T5.6: generator chunks from the _lite pilot; tokenizer is shared."""
     root = _fixture_repo(tmp_path)
-    _seed_pilot(root, "pilot_tok_vq", 8.0)
-    _seed_pilot(root, "pilot_tok_vq_lite", 8.0)
+    _seed_pilot(root, "pilot_tok_vq", 1.0)
+    _seed_pilot(root, "pilot_tok_vq_lite", 1.5)
     _seed_pilot(root, "pilot_gen_vq_ce", 8.0)
     _seed_pilot(root, "pilot_gen_vq_ce_lite", 1.0)
 
@@ -220,9 +228,13 @@ def test_lite_full_run_uses_the_lite_pilot_record_and_shared_tokenizer(
     assert result.returncode == 0, result.stderr
     tok = [line for line in _sbatch_lines(result.stdout) if "tok.sbatch" in line]
     gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
-    # ceil(10000 * 8.0 / (0.9 * 10800)) = 9 tokenizer chunks (shared dev pilot),
-    # ceil(10000 * 1.0 / (0.9 * 10800)) = 2 generator chunks (the _lite pilot).
-    assert len(tok) == 9 and len(gen) == 2
+    # T5.7 B1 (whole resume intervals, usable 9720 s per chunk): tokenizer from
+    # the shared dev pilot, 5000 steps x 1.0 s = 5000 s per interval -> 1
+    # interval per chunk -> 2 chunks; generator from the _lite pilot, 1000
+    # steps x 1.0 s -> 9 intervals per chunk -> ceil(10000 / 9000) = 2 chunks.
+    # The dev generator pilot (8.0 s/step, 8000 s per interval would give 12
+    # chunks) must not be used for the lite run.
+    assert len(tok) == 2 and len(gen) == 2
     assert "(pilot pilot_tok_vq)" in result.stderr
     assert "(pilot pilot_gen_vq_ce_lite)" in result.stderr
     assert "RUN_ID=tok_vq_10k" in tok[0]
@@ -268,18 +280,23 @@ def test_g2_pilot_with_ablations_submits_seven_arms(tmp_path: Path) -> None:
 
 def test_full_g0_chunks_from_the_pilot_sec_per_step(tmp_path: Path) -> None:
     root = _fixture_repo(tmp_path)
-    _seed_pilot(root, "pilot_tok_vq", 4.0)
-    _seed_pilot(root, "pilot_gen_vq_ce", 4.0)
+    _seed_pilot(root, "pilot_tok_vq", 1.0)
+    _seed_pilot(root, "pilot_gen_vq_ce", 2.5)
 
     result = _run(root, ["g0", "full"])
 
     assert result.returncode == 0, result.stderr
-    # ceil(10000 * 4.0 / (0.9 * 10800)) = ceil(4.115...) = 5
+    # T5.7 B1: a chunk advances in whole resume intervals. usable = 0.9 * 10800 =
+    # 9720 s. Tokenizer (resume every 5000 steps): 5000 s per interval -> 1
+    # interval = 5000 steps per chunk -> 2 chunks. Generator (resume every 10% =
+    # 1000 steps): 2500 s per interval -> 3 intervals = 3000 steps per chunk ->
+    # ceil(10000 / 3000) = 4 chunks (the old formula said 3 and never finished).
     tok = [line for line in _sbatch_lines(result.stdout) if "tok.sbatch" in line]
     gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
-    assert len(tok) == 5 and len(gen) == 5
-    assert "5 chunk(s) (pilot pilot_tok_vq)" in result.stderr
-    assert "--dependency=afterany:<JOB_4>" in tok[4]
+    assert len(tok) == 2 and len(gen) == 4
+    assert "2 chunk(s) (pilot pilot_tok_vq)" in result.stderr
+    assert "4 chunk(s) (pilot pilot_gen_vq_ce)" in result.stderr
+    assert "afterany:<JOB_3>" in gen[3]
     assert "tok_vq_10k" in tok[0] and "STEPS=10000" in tok[0]
     assert "gen_vq_ce_dev" in gen[0] and "GEN_PPL" not in gen[0]
 
@@ -575,3 +592,55 @@ def test_scripts_run_by_other_scripts_are_executable_in_the_index() -> None:
         assert modes[path] == "100755", f"{path} is {modes[path]} in the git index"
     for path in ("scripts/launch_phase.sh", "scripts/slurm/chain.sh"):
         assert modes.get(path) == "100755", path
+
+
+def test_full_run_errors_when_one_resume_interval_does_not_fit_the_wall(
+    tmp_path: Path,
+) -> None:
+    """T5.7 B1: 1000 steps x 10 s = 10000 s > 0.9 x 10800 s, so no chunk would
+    ever reach its next checkpoint and the chain would restart forever."""
+    root = _fixture_repo(tmp_path)
+    _done(root, "tok_vq_10k")
+    _seed_pilot(root, "pilot_gen_vq_ce", 10.0)
+
+    result = _run(root, ["g0", "full"])
+
+    assert result.returncode == 1
+    assert "resume interval" in result.stderr
+    assert "--wall" in result.stderr
+    assert not _sbatch_lines(result.stdout)
+
+
+def test_full_run_prefers_train_sec_per_step_and_says_so(tmp_path: Path) -> None:
+    """T5.7 m1: pilot wall time includes diagnostics, Gen PPL and saves."""
+    root = _fixture_repo(tmp_path)
+    _done(root, "tok_vq_10k")
+    _seed_pilot(root, "pilot_gen_vq_ce", 10.0, train_sec_per_step=1.0)
+
+    result = _run(root, ["g0", "full"])
+
+    assert result.returncode == 0, result.stderr
+    gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
+    # 1000 s per interval -> 9 intervals = 9000 steps per chunk -> 2 chunks.
+    assert len(gen) == 2
+    assert "train_sec_per_step" in result.stderr
+
+
+def test_planner_constants_match_the_configs_the_launch_kit_uses() -> None:
+    """The planner assumes a resume point every RESUME_FRACTION of a generator
+    run and every TOK_RESUME_STEPS tokenizer steps; the configs must agree."""
+    from jncm.config import load_config
+
+    script = Path(LAUNCH).read_text(encoding="utf-8")
+    fraction = float(re.search(r'^RESUME_FRACTION="([0-9.]+)"', script, re.M).group(1))
+    tok_steps = int(re.search(r"^TOK_RESUME_STEPS=(\d+)", script, re.M).group(1))
+    for name in (
+        "tinystories_dev", "tinystories_lite", "jepa_dev", "jepa_lite",
+    ):
+        cfg = load_config(Path("configs") / f"{name}.yaml")
+        train = cfg.generator.train
+        assert train.save_milestones, name
+        grid = [0.0] + sorted(train.milestones)
+        gaps = [round(b - a, 6) for a, b in zip(grid, grid[1:])]
+        assert max(gaps) <= fraction + 1e-9, (name, gaps)
+        assert cfg.train.save_every <= tok_steps, name

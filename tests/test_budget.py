@@ -238,3 +238,19 @@ def test_run_table_covers_the_seven_jepa_arms(tmp_path: Path, step: int) -> None
         "jepa_regress_dev",
         "jepa_no_ema_dev",
     }
+
+
+def test_prefers_train_sec_per_step_over_wall_time(tmp_path: Path) -> None:
+    """T5.7 m1: wall time includes diagnostics, Gen PPL and checkpoint saves."""
+    _all_pilots(tmp_path, 9.0)  # wall time only: would be 25 h per run
+    pilot = tmp_path / "pilot_gen_vq_ce"
+    last = {"step": 2, "sec_per_step": 9.0, "train_sec_per_step": 1.0}
+    (pilot / "metrics.jsonl").write_text(
+        json.dumps({"step": 1, "sec_per_step": 4.5}) + "\n" + json.dumps(last) + "\n",
+        encoding="utf-8",
+    )
+
+    assert budget.pilot_sec_per_step(tmp_path, "pilot_gen_vq_ce") == 1.0
+    assert budget.pilot_sec_per_step(tmp_path, "pilot_tok_vq") == 9.0  # older pilot
+    result = _run(tmp_path)
+    assert "train_sec_per_step" in result.stdout

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -492,3 +493,58 @@ def test_train_rejects_vq_before_touching_files(tmp_path: Path) -> None:
     cfg.generator.head = "ce"
     with pytest.raises(ValueError):
         train(cfg, tmp_path / "missing.pt", max_steps=1, results_dir=tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# T5.7 (REVIEW B1, m1): resume checkpoints at milestones, training-step timing
+# --------------------------------------------------------------------------- #
+
+
+class _Killed(Exception):
+    """Stands in for a Slurm TIMEOUT between two steps."""
+
+
+def test_a_killed_joint_run_resumes_from_the_last_milestone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg()
+    cfg.generator.train.eval_every = 10**9
+    cfg.generator.train.save_every = 1000  # far away: only milestones can save
+    cfg.generator.train.milestones = [0.5, 1.0]
+    real_get_lr = tj.get_lr
+
+    def killing_get_lr(step: int, *args: object, **kwargs: object) -> float:
+        if step == 6:
+            raise _Killed
+        return real_get_lr(step, *args, **kwargs)
+
+    monkeypatch.setattr(tj, "get_lr", killing_get_lr)
+    with pytest.raises(_Killed):
+        _run(tmp_path, cfg, steps=10)
+
+    ckpt_dir = tmp_path / "results" / "jepa_test" / "ckpt"
+    latest = torch.load(ckpt_dir / "latest.pt", map_location="cpu")
+    assert latest["step"] == 4  # five steps are done at the 50% milestone
+    assert "optimizer_state_dict" in latest and "ema" in latest
+    milestone = torch.load(ckpt_dir / "milestone_050.pt", map_location="cpu")
+    assert "optimizer_state_dict" not in milestone
+    assert not list(ckpt_dir.glob("step_*.pt"))
+    assert not list(ckpt_dir.glob("*.tmp"))
+
+
+def test_joint_train_sec_per_step_excludes_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg()
+    cfg.generator.train.eval_every = 2
+    real_diagnostics = tj.run_diagnostics
+
+    def slow_diagnostics(*args: object, **kwargs: object) -> dict:
+        time.sleep(0.3)
+        return real_diagnostics(*args, **kwargs)
+
+    monkeypatch.setattr(tj, "run_diagnostics", slow_diagnostics)
+    _, records = _run(tmp_path, cfg, steps=4)
+
+    last = records[-1]
+    assert 0.0 < last["train_sec_per_step"] < 0.5 * last["sec_per_step"]

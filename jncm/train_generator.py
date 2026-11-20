@@ -41,7 +41,13 @@ from jncm.train_tokenizer import (
     get_lr,
     setup_data,
 )
-from jncm.utils import JSONLLogger, parameter_counts, seed_everything, write_done
+from jncm.utils import (
+    JSONLLogger,
+    atomic_torch_save,
+    parameter_counts,
+    seed_everything,
+    write_done,
+)
 
 DecodeFn = Callable[[list[int]], str]
 
@@ -333,6 +339,7 @@ def run_diagnostics(
     tok_positions: int,
     gen_positions: int,
     sec_per_step: float,
+    train_sec_per_step: float,
     data_source: str = "unknown",
     decode_fn: DecodeFn | None = None,
     scorer: Any = None,
@@ -362,6 +369,8 @@ def run_diagnostics(
         "per_level_loss": [float(value) for value in per_level_loss],
         "lr": float(current_lr),
         "sec_per_step": float(sec_per_step),
+        # T5.7 m1: the training step only (no diagnostics, scoring or saves).
+        "train_sec_per_step": float(train_sec_per_step),
         "data_source": data_source,
         "tok_positions": int(tok_positions),
         "gen_positions": int(gen_positions),
@@ -498,6 +507,7 @@ def train(
     recent_loss = 0.0
     recent_per_level = [0.0] * tokenizer.K
     sec_per_step = 0.0
+    train_seconds = 0.0
     loop_start = time.time()
     for step in range(start_step, gen_train.max_steps):
         curr_lr = get_lr(
@@ -510,6 +520,7 @@ def train(
         for pg in optimizer.param_groups:
             pg["lr"] = curr_lr
 
+        step_start = time.perf_counter()
         x_batch = next(train_loader).to(device)
         optimizer.zero_grad(set_to_none=True)
         loss_value = 0.0
@@ -530,6 +541,7 @@ def train(
         if gen_train.grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(params, gen_train.grad_clip)
         optimizer.step()
+        train_seconds += time.perf_counter() - step_start
 
         recent_loss = loss_value
         recent_per_level = per_level_value
@@ -550,6 +562,7 @@ def train(
                 tok_positions=tok_positions,
                 gen_positions=gen_positions,
                 sec_per_step=sec_per_step,
+                train_sec_per_step=train_seconds / float(step + 1 - start_step),
                 data_source=data_source,
                 decode_fn=decode_fn,
                 scorer=scorer,
@@ -588,13 +601,16 @@ def train(
                     for key, value in state.items()
                     if key != "optimizer_state_dict"
                 }
-                torch.save(
+                atomic_torch_save(
                     {**milestone_state, "milestone": milestone},
                     ckpt_dir / f"milestone_{round(milestone * 100):03d}.pt",
                 )
             if is_periodic:
-                torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
-                torch.save(state, ckpt_dir / "latest.pt")
+                atomic_torch_save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
+            # T5.7 B1: every milestone is also a resume point. With only
+            # save_every (5,000) a chain chunk shorter than 5,000 steps never
+            # wrote latest.pt and restarted from step 0.
+            atomic_torch_save(state, ckpt_dir / "latest.pt")
 
     write_done(run_dir, step=gen_train.max_steps, sec_per_step=sec_per_step)
     print(f"Training completed. Results written to {run_dir}")

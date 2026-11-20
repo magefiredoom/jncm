@@ -57,7 +57,13 @@ from jncm.train_tokenizer import (
     get_lr,
     setup_data,
 )
-from jncm.utils import JSONLLogger, parameter_counts, seed_everything, write_done
+from jncm.utils import (
+    JSONLLogger,
+    atomic_torch_save,
+    parameter_counts,
+    seed_everything,
+    write_done,
+)
 
 
 def validate_jepa_config(cfg: Config) -> None:
@@ -134,6 +140,7 @@ def run_diagnostics(
     current_lr: float,
     joint_positions: int,
     sec_per_step: float,
+    train_sec_per_step: float,
     data_source: str,
     alarm: CollapseAlarm,
     momentum: float | None = None,
@@ -164,6 +171,8 @@ def run_diagnostics(
         "per_level_pred_loss": [float(value.detach()) for value in joint.per_level_pred],
         "lr": float(current_lr),
         "sec_per_step": float(sec_per_step),
+        # T5.7 m1: the training step only (no diagnostics or saves).
+        "train_sec_per_step": float(train_sec_per_step),
         "data_source": data_source,
         "cut": int(joint.cut),
         "head": cfg.generator.head,
@@ -296,6 +305,7 @@ def train(
     first_record = True
 
     sec_per_step = 0.0
+    train_seconds = 0.0
     loop_start = time.time()
     for step in range(start_step, gen_train.max_steps):
         curr_lr = get_lr(
@@ -308,6 +318,7 @@ def train(
         for group in optimizer.param_groups:
             group["lr"] = curr_lr
 
+        step_start = time.perf_counter()
         x_batch = next(train_loader).to(device)
         optimizer.zero_grad(set_to_none=True)
         loss_value = 0.0
@@ -360,6 +371,7 @@ def train(
         )
 
         momentum = target_encoder.update(tokenizer, step) if target_encoder else None
+        train_seconds += time.perf_counter() - step_start
 
         joint_positions = (step + 1) * gen_train.batch_size * cfg.L
         sec_per_step = (time.time() - loop_start) / float(step + 1 - start_step)
@@ -378,6 +390,7 @@ def train(
                 current_lr=curr_lr,
                 joint_positions=joint_positions,
                 sec_per_step=sec_per_step,
+                train_sec_per_step=train_seconds / float(step + 1 - start_step),
                 data_source=data_source,
                 alarm=alarm,
                 momentum=momentum,
@@ -421,13 +434,15 @@ def train(
                     for key, value in state.items()
                     if key != "optimizer_state_dict"
                 }
-                torch.save(
+                atomic_torch_save(
                     {**milestone_state, "milestone": milestone},
                     ckpt_dir / f"milestone_{round(milestone * 100):03d}.pt",
                 )
             if is_periodic:
-                torch.save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
-                torch.save(state, ckpt_dir / "latest.pt")
+                atomic_torch_save(state, ckpt_dir / f"step_{step + 1:06d}.pt")
+            # T5.7 B1: every milestone is also a resume point (see
+            # train_generator.py); latest.pt is replaced atomically.
+            atomic_torch_save(state, ckpt_dir / "latest.pt")
 
     write_done(run_dir, step=gen_train.max_steps, sec_per_step=sec_per_step)
     print(f"Training completed. Results written to {run_dir}")

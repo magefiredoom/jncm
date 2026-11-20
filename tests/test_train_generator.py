@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -848,3 +849,72 @@ def test_regress_teacher_forced_level_one_reproduces_eight(
         f"teacher-forced regress accuracy per sequence {accuracy.tolist()} "
         "has a sequence below 0.90"
     )
+
+
+# --------------------------------------------------------------------------- #
+# T5.7 (REVIEW B1, m1): resume checkpoints at milestones, training-step timing
+# --------------------------------------------------------------------------- #
+
+
+class _Killed(Exception):
+    """Stands in for a Slurm TIMEOUT between two steps."""
+
+
+def test_a_killed_run_resumes_from_the_last_milestone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _smoke_cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.eval_every = 10**9
+    cfg.generator.train.save_every = 1000  # far away: only milestones can save
+    cfg.generator.train.milestones = [0.5, 1.0]
+    cfg.generator.train.warmup_steps = 1
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L)))
+    real_get_lr = tg.get_lr
+
+    def killing_get_lr(step: int, *args: object, **kwargs: object) -> float:
+        if step == 6:
+            raise _Killed
+        return real_get_lr(step, *args, **kwargs)
+
+    monkeypatch.setattr(tg, "get_lr", killing_get_lr)
+    with pytest.raises(_Killed):
+        train(
+            cfg, ckpt, max_steps=10, run_id="gen_kill",
+            results_dir=tmp_path / "results", data_dir=data_dir,
+        )
+
+    ckpt_dir = tmp_path / "results" / "gen_kill" / "ckpt"
+    latest = torch.load(ckpt_dir / "latest.pt", map_location="cpu")
+    assert latest["step"] == 4  # five steps are done at the 50% milestone
+    assert "optimizer_state_dict" in latest  # resume needs Adam
+    milestone = torch.load(ckpt_dir / "milestone_050.pt", map_location="cpu")
+    assert "optimizer_state_dict" not in milestone  # milestones stay slim
+    assert not list(ckpt_dir.glob("step_*.pt"))  # save_every was not reached
+    assert not list(ckpt_dir.glob("*.tmp"))
+
+
+def test_train_sec_per_step_excludes_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _smoke_cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.eval_every = 2
+    cfg.generator.train.warmup_steps = 1
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L)))
+    real_diagnostics = tg.run_diagnostics
+
+    def slow_diagnostics(*args: object, **kwargs: object) -> dict:
+        time.sleep(0.3)  # stands in for sampling plus GPT-2 scoring
+        return real_diagnostics(*args, **kwargs)
+
+    monkeypatch.setattr(tg, "run_diagnostics", slow_diagnostics)
+    run_dir = train(
+        cfg, ckpt, max_steps=4, run_id="gen_timing",
+        results_dir=tmp_path / "results", data_dir=data_dir,
+    )
+
+    last = JSONLLogger(run_dir / "metrics.jsonl").read_all()[-1]
+    assert 0.0 < last["train_sec_per_step"] < 0.5 * last["sec_per_step"]

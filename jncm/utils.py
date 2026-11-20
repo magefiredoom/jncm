@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 import random
 import time
@@ -40,6 +41,33 @@ def write_done(run_dir: str | Path, *, step: int, sec_per_step: float) -> Path:
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return path
+
+
+def atomic_torch_save(obj: Any, path: str | Path) -> Path:
+    """Save ``obj`` to ``path`` so that a reader sees the old file or the new one.
+
+    The state goes to ``<path>.tmp`` in the same directory and is moved into
+    place with ``os.replace`` (atomic on POSIX and Windows). A job killed in
+    the middle of a write leaves the previous checkpoint intact (T5.7, REVIEW
+    B1); with ``latest.pt`` rewritten at every milestone that is the common
+    case at a Slurm TIMEOUT, not a rarity.
+
+    Args:
+        obj: Anything ``torch.save`` accepts.
+        path: Final checkpoint path.
+
+    Returns:
+        ``path`` as a ``Path``.
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        torch.save(obj, tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return path
 
 
