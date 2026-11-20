@@ -58,15 +58,14 @@ A solo research project (undergraduate, one cluster allocation) building and com
 - Never trust "VERIFIED" without a command and output tail. Gate thresholds in TASKS.md are my starting values from NCM's TinyStories numbers; change them yourself if pilots show they are miscalibrated.
 
 ## 9. Next actions (ordered)
-1. `/resume`. Check `git log` for T5.5 and T5.6 commits and run `python -m pytest -q -m "not slow"`.
-2. If T5.6 is not done, do it (see docs/PENDING_PROMPTS.md, prompt 1): pilots reuse the real tokenizers when `results/tok_*_10k/DONE` exists, tokenizer ids never get `_lite`, `grad_accum` 16 dev / 4 lite, mode bits on `chain.sh` and `launch_phase.sh`, dry-run plans print job counts and requested GPU-hours.
-3. FIR sync and pilots (prompt 2): `git pull --ff-only`, GPT-2 present, pilots at `--time 00:20:00` for dev and lite, apply RUNBOOK section 0, run `budget.py`, then decide dev versus lite with the researcher.
-4. Corruption sweep with the `ce` arm (prompt 3).
-5. G0 full, then G1 (flow and regress), then collect results with `gate_report.py` (prompts 4 and 5). Compare to the G1 hypotheses in section 5.
-6. JEPA pilots, G2 base run, then an ablation subset sized by the budget.
-7. `/review` on the T5.5 and launch-kit diffs before spending big GPU time.
-8. Paper: fill the TBDs from `gate_report.py`, verify every citation, choose the workshop after Nov 29. A second NCM task (LM1B, Sudoku or XSum) only if G1 leaves budget; M6 is not specified.
-9. Parked: tokenizer timing diagnosis (0.85 s/step), SSH connection sharing, polish of Figure C (legend overlaps data in panel C2; label or remove the dotted line; hollow marker for the sample-capped level-1 vq point; 300 dpi, 7.0 x 2.8 in).
+1. Local work is finished (2026-11-20): all eleven findings of `docs/REVIEW_2026-11-19.md` are fixed and a second, independent review found nothing blocking (`docs/REVIEW_2026-11-20_second_reviewer.md`); the non-slow suite is green (numbers and commands in `docs/STATE.md`, "VERIFIED"). Do not re-derive it.
+2. Human, with MFA, when FIR is back: the six numbered steps under "Human must fill / do" in `docs/STATE.md` (push, run-id collision check for `pilot_gen_vq_ce`, discard the worktree patches and pull, the `models` symlink, cancel and resubmit the four G1 pilot evals with `HEAD` and a dependency, poll). Edit SPEC 6.2 and 8 as written in `docs/QUESTIONS.md` Q14 (the code and the paper already follow it).
+3. When the pilots are done: apply `RUNBOOK.md` section 0.1, check `sacct` Elapsed against the 20-minute limit (the milestone writes are new), run `scripts/budget.py` (it can print a clean total now), and the researcher decides dev versus lite.
+4. F16 corruption sweep (`RUNBOOK.md` section 0.4, three 2,000-step `ce` runs through `chain.sh`, not `launch_phase.sh`). Q15 (NCM replaces codes uniformly from the codebook, our `swap` does not) is information for that decision.
+5. G0 and G1 full runs together (`scripts/launch_phase.sh g0 full`, `g1 full`), then `scripts/gate_report.py`; compare with the G1 hypotheses in section 5.
+6. JEPA: the G2 base run (it warm-starts from `tok_noisy_10k` and is charged its positions, Q14), then an ablation subset sized by the budget.
+7. Paper: fill the TBDs from `gate_report.py`; the references are verified (`paper/references_verified.md`), what is open is the bibliography keys, the novelty search shortly before submission (candidates are listed there) and the workshop (after Nov 29).
+8. Parked: the tokenizer timing diagnosis (0.85 s/step); the tokenizer trainer still has the old checkpoint cadence and no data/RNG resume state, so apply the T5.7/T5.8 changes to it before any tokenizer rerun (for example a from-scratch JEPA ablation); a second NCM task only if G1 leaves budget; M6 is not specified. Figure C is polished (STATE, 2026-11-11).
 
 ## 10. Open decisions (researcher)
 Dev versus lite generator size (and then the text of the paper's setup and limitations); corruption schedule after the sweep; whether to raise d_k or lower sigma if noisy+flow lags; which JEPA ablations to run; JEPA batch and steps (the milestone grid decides how many equal-position points exist); a second dataset; the workshop; the final title.
