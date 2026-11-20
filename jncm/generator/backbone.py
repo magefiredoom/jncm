@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import torch
@@ -365,16 +364,24 @@ class GeneratorBackbone(nn.Module):
         """Build all level inputs; level k uses only codes j < k (SPEC 5.1).
 
         When the tokenizer is frozen (staged runs), the pooled cumulative
-        reconstructions are tokenizer-only and run under ``no_grad``. In joint
-        mode E is trainable, so they stay in the graph and the prediction loss
-        reaches E through the conditioning (SPEC 8 step 3). ``input_embed`` is
-        always applied outside (T5.5a F11). Both trainers call this function.
+        reconstructions are tokenizer-only: they run under ``no_grad`` and with
+        autocast disabled, so the conditioning is the same fp32 chain the
+        sampler builds (T5.9b, REVIEW m3; the staged trainer runs this call
+        inside bf16 autocast, which rounded every contribution). In joint
+        mode E is trainable, so they stay in the graph under the ambient
+        autocast and the prediction loss reaches E through the conditioning
+        (SPEC 8 step 3). ``input_embed`` is always applied outside, in the
+        ambient autocast (T5.5a F11). Both trainers call this function.
         """
         frozen = not any(
             parameter.requires_grad for parameter in tokenizer.parameters()
         )
-        context = torch.no_grad() if frozen else nullcontext()
-        with context:
+        if frozen:
+            with torch.no_grad(), torch.autocast(
+                device_type=codes[0].device.type, enabled=False
+            ):
+                reps = self.pooled_reconstructions(tokenizer, codes)
+        else:
             reps = self.pooled_reconstructions(tokenizer, codes)
         return self.input_embed(reps, levels=list(range(1, self.K + 1)))
 

@@ -186,3 +186,70 @@ def test_position_features_are_normalized() -> None:
     projected = proj([8, 1])
     assert projected[0].shape == (1, 8, 32)
     assert projected[1].shape == (1, 1, 32)
+
+
+# --------------------------------------------------------------------------- #
+# T5.9b (REVIEW m3): the frozen conditioning chain is computed in fp32
+# --------------------------------------------------------------------------- #
+
+
+def _freeze(tok: MultiscaleTokenizer) -> None:
+    for parameter in tok.parameters():
+        parameter.requires_grad_(False)
+
+
+@pytest.mark.parametrize("quantizer", ["vq", "noisy"])
+def test_frozen_conditioning_chain_ignores_bf16_autocast(
+    quantizer: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staged step runs inside bf16 autocast, but the sampler builds the same
+    chain in fp32. The contributions are added to an fp32 buffer, so the damage
+    is rounding in the values, not a dtype: compare the values and the dtype of
+    every contribution."""
+    tok, backbone = _build(quantizer)
+    _freeze(tok)
+    codes = _fake_codes(quantizer, 2, seed=5)
+    contrib_dtypes: list[torch.dtype] = []
+    real_contrib = tok.contrib
+
+    def spy_contrib(k: int, code: torch.Tensor) -> torch.Tensor:
+        out = real_contrib(k, code)
+        contrib_dtypes.append(out.dtype)
+        return out
+
+    monkeypatch.setattr(tok, "contrib", spy_contrib)
+    pooled: dict[str, list[torch.Tensor]] = {}
+    real_pooled = backbone.pooled_reconstructions
+
+    def spy_pooled(tokenizer: MultiscaleTokenizer, chain_codes: list[torch.Tensor]):
+        pooled["reps"] = real_pooled(tokenizer, chain_codes)
+        return pooled["reps"]
+
+    monkeypatch.setattr(backbone, "pooled_reconstructions", spy_pooled)
+
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        backbone.embed_levels(tok, codes)
+    under_autocast = pooled["reps"]
+    dtypes_under_autocast = list(contrib_dtypes)
+    backbone.embed_levels(tok, codes)
+    reference = pooled["reps"]
+
+    assert dtypes_under_autocast == [torch.float32] * (K - 1)
+    assert all(rep.dtype == torch.float32 for rep in under_autocast)
+    for level, (a, b) in enumerate(zip(under_autocast, reference), start=1):
+        assert torch.equal(a, b), f"level {level} input carries bf16 rounding"
+
+
+def test_trainable_tokenizer_keeps_its_conditioning_gradient() -> None:
+    """The joint path (E trainable) is deliberately left as it was: the pooled
+    reconstructions stay in the graph and the prediction loss reaches E."""
+    tok, backbone = _build("noisy")
+    for parameter in tok.parameters():
+        parameter.requires_grad_(True)
+    codes = _fake_codes("noisy", 2, seed=6)
+
+    reps = backbone.embed_levels(tok, codes)
+    sum(rep.float().sum() for rep in reps).backward()
+
+    assert reps[1].requires_grad
+    assert any(parameter.grad is not None for parameter in tok.parameters())
