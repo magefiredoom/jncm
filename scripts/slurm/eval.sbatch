@@ -34,8 +34,9 @@
 # carries its own tokenizer, so leave TOKENIZER unset for those runs and
 # run_eval.py reads it from the checkpoint. RUN_ID names results/<RUN_ID>/ (its
 # ckpt/milestone_*.pt files are evaluated).
-# N_SEEDS (default 5) and N_SAMPLES (default 256) match SPEC 6.1; GPT2_MODEL_PATH
-# defaults to models/gpt2-large. CONFIG is optional (default
+# N_SEEDS (default 5) and N_SAMPLES (default 256) match SPEC 6.1. The GPT-2
+# path is GPT2_MODEL_PATH, else GPT2_LARGE_PATH (the name the rest of the kit and
+# RUNBOOK use), else models/gpt2-large. CONFIG is optional (default
 # configs/tinystories_dev.yaml); the lite runs use
 # CONFIG=configs/tinystories_lite.yaml (or configs/jepa_lite.yaml for a joint run).
 # HEAD (ce, regress or flow) is required for a staged flow or regress run (G1):
@@ -98,7 +99,7 @@ export PYTHONUNBUFFERED=1
 
 n_seeds="${N_SEEDS:-5}"
 n_samples="${N_SAMPLES:-256}"
-gpt2="${GPT2_MODEL_PATH:-models/gpt2-large}"
+gpt2="${GPT2_MODEL_PATH:-${GPT2_LARGE_PATH:-models/gpt2-large}}"
 seed="${SLURM_ARRAY_TASK_ID:-0}"
 
 cmd=(

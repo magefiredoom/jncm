@@ -88,7 +88,7 @@ def _run_eval_sbatch(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
+        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "GPT2_MODEL_PATH", "GPT2_LARGE_PATH", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
     }
     env.update({"SLURM_SUBMIT_DIR": str(root), "RUN_ID": "fake_run"})
     env.update(extra_env)
@@ -162,3 +162,43 @@ def test_an_unknown_head_is_rejected_before_anything_runs(tmp_path: Path) -> Non
     assert result.returncode == 2
     assert "HEAD must be" in result.stderr
     assert "PYTHON_ARGS" not in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# GPT-2 path: GPT2_LARGE_PATH is the name the rest of the kit uses
+# --------------------------------------------------------------------------- #
+
+
+def _gpt2_arg(stdout: str) -> str:
+    words = stdout.split()
+    return words[words.index("--gpt2") + 1]
+
+
+def test_gpt2_large_path_is_honoured(tmp_path: Path) -> None:
+    """The 16 pilots were submitted with only GPT2_LARGE_PATH exported (RUNBOOK,
+    run_eval.py), but eval.sbatch passed --gpt2 models/gpt2-large explicitly, a
+    path that does not exist in the FIR checkout, which overrode it."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"GPT2_LARGE_PATH": "/home/u/jncm/models/gpt2-large"})
+
+    assert result.returncode == 0, result.stderr
+    assert _gpt2_arg(result.stdout) == "/home/u/jncm/models/gpt2-large"
+
+
+def test_gpt2_model_path_wins_over_gpt2_large_path(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(
+        root, {"GPT2_MODEL_PATH": "/a/model", "GPT2_LARGE_PATH": "/b/large"}
+    )
+
+    assert _gpt2_arg(result.stdout) == "/a/model"
+
+
+def test_gpt2_path_defaults_to_the_repo_models_directory(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {})
+
+    assert _gpt2_arg(result.stdout) == "models/gpt2-large"
