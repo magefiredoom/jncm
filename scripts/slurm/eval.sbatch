@@ -2,9 +2,15 @@
 #SBATCH --job-name=jncm_eval
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=32000M
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-4
 #SBATCH --time=01:00:00
+# CPU and memory are explicit on purpose: FIR defaults to 1 CPU and 256 MB, and the
+# 2026-11-11 pilots were OOM-killed at ~230 MB while torch imported. 6 CPUs and
+# 32000M are the values tok.sbatch ran with (GPT-2 large is loaded here too); the
+# real need is UNVERIFIED until an eval reports MaxRSS (sacct -j <id> --format=JobID,MaxRSS).
 # Wall clock: 01:00:00 is only a valid default; chain.sh passes --time=<wall>,
 # and a manual sbatch overrides it on the command line (e.g. --time=03:00:00).
 # TODO(placeholder): array range -- 0-4 matches N_SEEDS=5 (one task per seed).
