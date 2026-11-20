@@ -918,3 +918,87 @@ def test_train_sec_per_step_excludes_diagnostics(
 
     last = JSONLLogger(run_dir / "metrics.jsonl").read_all()[-1]
     assert 0.0 < last["train_sec_per_step"] < 0.5 * last["sec_per_step"]
+
+
+# --------------------------------------------------------------------------- #
+# T5.8 (REVIEW M2): resume continues the data stream and every RNG
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("head,quantizer", [("ce", "vq"), ("flow", "noisy")])
+def test_resume_is_bitwise_identical_to_an_uninterrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: str, quantizer: str
+) -> None:
+    cfg = _smoke_cfg(head=head, quantizer=quantizer)
+    cfg.generator.dropout = 0.1  # dropout draws from the global RNG
+    cfg.generator.corrupt.mode = "swap"  # corruption draws from the step generator
+    cfg.generator.train.batch_size = 3  # 8 windows: batches straddle epoch borders
+    cfg.generator.train.eval_every = 10**9
+    cfg.generator.train.save_every = 1000
+    cfg.generator.train.milestones = [0.5, 1.0]
+    cfg.generator.train.warmup_steps = 1
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (8, cfg.L)))
+
+    straight = train(
+        cfg, ckpt, max_steps=10, run_id="straight",
+        results_dir=tmp_path / "a", data_dir=data_dir,
+    )
+    real_get_lr = tg.get_lr
+
+    def killing_get_lr(step: int, *args: object, **kwargs: object) -> float:
+        if step == 6:
+            raise _Killed
+        return real_get_lr(step, *args, **kwargs)
+
+    monkeypatch.setattr(tg, "get_lr", killing_get_lr)
+    with pytest.raises(_Killed):
+        train(
+            cfg, ckpt, max_steps=10, run_id="killed",
+            results_dir=tmp_path / "b", data_dir=data_dir,
+        )
+    monkeypatch.setattr(tg, "get_lr", real_get_lr)
+    resumed = train(
+        cfg, ckpt, max_steps=10, run_id="killed", results_dir=tmp_path / "b",
+        data_dir=data_dir,
+        resume_path=tmp_path / "b" / "killed" / "ckpt" / "latest.pt",
+    )
+
+    a = torch.load(straight / "ckpt" / "latest.pt", map_location="cpu")
+    b = torch.load(resumed / "ckpt" / "latest.pt", map_location="cpu")
+    for part in ("backbone", "head"):
+        assert a[part].keys() == b[part].keys()
+        for name in a[part]:
+            assert torch.equal(a[part][name], b[part][name]), (part, name)
+    final = lambda run: JSONLLogger(run / "metrics.jsonl").read_all()[-1]  # noqa: E731
+    assert final(straight)["per_level_loss"] == final(resumed)["per_level_loss"]
+    assert final(straight)["train_loss"] == final(resumed)["train_loss"]
+
+
+@pytest.mark.parametrize("missing", ["data_state", "rng_state", "step_rng"])
+def test_resume_refuses_a_checkpoint_without_stream_state(
+    tmp_path: Path, missing: str
+) -> None:
+    """A checkpoint from before T5.8 cannot continue the stream; it must say so
+    instead of silently replaying the data from the start."""
+    cfg = _smoke_cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.eval_every = 2
+    cfg.generator.train.save_every = 2
+    cfg.generator.train.warmup_steps = 1
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L)))
+    run_dir = train(
+        cfg, ckpt, max_steps=2, run_id="gen_old",
+        results_dir=tmp_path / "results", data_dir=data_dir,
+    )
+    state = torch.load(run_dir / "ckpt" / "latest.pt", map_location="cpu")
+    del state[missing]
+    old = tmp_path / "old.pt"
+    torch.save(state, old)
+
+    with pytest.raises(ValueError, match=missing):
+        train(
+            cfg, ckpt, max_steps=4, run_id="gen_old",
+            results_dir=tmp_path / "results", data_dir=data_dir, resume_path=old,
+        )

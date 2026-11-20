@@ -44,7 +44,9 @@ from jncm.train_tokenizer import (
 from jncm.utils import (
     JSONLLogger,
     atomic_torch_save,
+    capture_rng_state,
     parameter_counts,
+    restore_rng_state,
     seed_everything,
     write_done,
 )
@@ -174,6 +176,28 @@ def validate_grad_accum(batch_size: int, grad_accum: int) -> None:
         raise ValueError(
             f"generator.train.batch_size ({batch_size}) must be divisible by "
             f"grad_accum ({grad_accum})"
+        )
+
+
+STREAM_STATE_KEYS = ("data_state", "rng_state", "step_rng")
+
+
+def require_stream_state(checkpoint: dict[str, Any], path: Path) -> None:
+    """Refuse to resume from a checkpoint that cannot continue the streams.
+
+    Checkpoints from before T5.8 lack the data-iterator and RNG state. Resuming
+    from one would replay the data and every random draw from step 0, which
+    silently changes what a chunked run sees (REVIEW M2), so it raises.
+
+    Raises:
+        ValueError: when any of ``STREAM_STATE_KEYS`` is missing.
+    """
+    missing = [key for key in STREAM_STATE_KEYS if key not in checkpoint]
+    if missing:
+        raise ValueError(
+            f"checkpoint {path} cannot continue the run: it has no "
+            f"{', '.join(missing)} (written before T5.8). Resuming would replay "
+            "the data and the random draws from step 0; start the run again."
         )
 
 
@@ -473,9 +497,11 @@ def train(
         if not r_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {r_path}")
         checkpoint = torch.load(r_path, map_location=device)
+        require_stream_state(checkpoint, r_path)
         backbone.load_state_dict(checkpoint["backbone"])
         head.load_state_dict(checkpoint["head"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        train_loader.load_state_dict(checkpoint["data_state"])
         start_step = checkpoint["step"] + 1
         tok_positions = int(checkpoint.get("tok_positions", tok_positions))
         print(f"Resumed from step {start_step}")
@@ -483,6 +509,10 @@ def train(
     backbone.train()
     head.train()
     rng = torch.Generator(device=device).manual_seed(cfg.seed)
+    if resume_path:
+        # T5.8 M2: continue the random streams, not restart them at the seed.
+        rng.set_state(checkpoint["step_rng"].cpu())
+        restore_rng_state(checkpoint["rng_state"])
     use_autocast = device.type == "cuda"
     amp_dtype = (
         torch.bfloat16
@@ -592,6 +622,11 @@ def train(
                 "config": asdict(cfg),
                 "gen_positions": gen_positions,
                 "tok_positions": tok_positions,
+                # T5.8 M2: where the data stream and the random streams are, so
+                # a resumed chunk continues them (see require_stream_state).
+                "data_state": train_loader.state_dict(),
+                "rng_state": capture_rng_state(),
+                "step_rng": rng.get_state(),
             }
             if milestone is not None:
                 # T5.5b F14: milestone files carry no Adam state (about 3x

@@ -71,6 +71,49 @@ def atomic_torch_save(obj: Any, path: str | Path) -> Path:
     return path
 
 
+def capture_rng_state() -> dict[str, Any]:
+    """Global python, numpy and torch (CPU and CUDA) RNG states for a checkpoint.
+
+    Dropout and any other draw without an explicit generator use these streams.
+    Everything is plain ints, floats, lists and tensors, so the state loads under
+    ``torch.load``'s default ``weights_only`` unpickler (T5.8, REVIEW M2).
+    The CUDA branch (``get_rng_state_all``) is UNVERIFIED until a pilot resumes
+    on a GPU.
+
+    Returns:
+        ``{"python": [...], "numpy": [...], "torch": ByteTensor, "cuda": [ByteTensor] or None}``.
+    """
+    version, internal, gauss = random.getstate()
+    name, keys, pos, has_gauss, cached = np.random.get_state()
+    return {
+        "python": [version, list(internal), gauss],
+        "numpy": [name, keys.tolist(), int(pos), int(has_gauss), float(cached)],
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def restore_rng_state(state: dict[str, Any]) -> None:
+    """Restore the streams saved by ``capture_rng_state``.
+
+    A checkpoint loaded with ``map_location`` of a GPU holds its RNG tensors on
+    that GPU, but ``set_rng_state`` needs CPU ByteTensors, hence ``.cpu()``.
+
+    Raises:
+        ValueError: a required stream (python, numpy, torch) is missing.
+    """
+    for key in ("python", "numpy", "torch"):
+        if state.get(key) is None:
+            raise ValueError(f"RNG state is missing the {key!r} stream")
+    version, internal, gauss = state["python"]
+    random.setstate((version, tuple(internal), gauss))
+    name, keys, pos, has_gauss, cached = state["numpy"]
+    np.random.set_state((name, np.asarray(keys, dtype=np.uint32), pos, has_gauss, cached))
+    torch.set_rng_state(state["torch"].cpu())
+    if state.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([tensor.cpu() for tensor in state["cuda"]])
+
+
 def parameter_counts(**modules: torch.nn.Module) -> dict[str, int]:
     """Parameter counts of named modules plus their total (T5.5b F15).
 

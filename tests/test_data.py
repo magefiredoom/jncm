@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import numpy as np
+import pytest
 import torch
 from jncm.data import InfiniteBatchIterator, MemmapDataset, count_positions
 
@@ -84,3 +85,66 @@ def test_train_val_disjointness(tmp_path: Path) -> None:
     val_set = set(val_batch.view(-1).tolist())
 
     assert train_set.isdisjoint(val_set)
+
+# --------------------------------------------------------------------------- #
+# T5.8 (REVIEW M2): the iterator can be saved and restored mid-run
+# --------------------------------------------------------------------------- #
+
+
+def _iterator(tmp_path: Path, windows: int = 5, batch: int = 2, shuffle: bool = True):
+    path = tmp_path / f"train_{windows}.bin"
+    if not path.exists():  # a second iterator maps the same file (Windows forbids rewriting it)
+        _create_synthetic_bin(path, windows, 4)
+    return InfiniteBatchIterator(
+        MemmapDataset(path, 4), batch_size=batch, seed=7, shuffle=shuffle
+    )
+
+
+@pytest.mark.parametrize("shuffle", [True, False])
+@pytest.mark.parametrize("consumed", [0, 1, 2, 3, 7, 12])
+def test_restored_iterator_continues_the_same_stream(
+    tmp_path: Path, shuffle: bool, consumed: int
+) -> None:
+    """5 windows and batch 2: a batch straddles every epoch boundary, and 12
+    batches reach epoch 4, so every kind of position is covered."""
+    reference = _iterator(tmp_path, shuffle=shuffle)
+    for _ in range(consumed):
+        next(reference)
+    state = reference.state_dict()
+    expected = [next(reference) for _ in range(9)]
+
+    restored = _iterator(tmp_path, shuffle=shuffle)
+    restored.load_state_dict(state)
+    got = [next(restored) for _ in range(9)]
+
+    assert all(torch.equal(a, b) for a, b in zip(expected, got))
+    assert restored.positions_seen == reference.positions_seen
+    assert isinstance(state["epoch"], int) and isinstance(state["pos"], int)
+
+
+def test_iterator_state_survives_a_weights_only_checkpoint(tmp_path: Path) -> None:
+    iterator = _iterator(tmp_path)
+    for _ in range(4):
+        next(iterator)
+    torch.save({"data_state": iterator.state_dict()}, tmp_path / "s.pt")
+
+    loaded = torch.load(tmp_path / "s.pt", map_location="cpu", weights_only=True)
+
+    other = _iterator(tmp_path)
+    other.load_state_dict(loaded["data_state"])
+    assert torch.equal(next(other), next(iterator))
+
+
+def test_iterator_state_from_another_dataset_or_seed_is_rejected(tmp_path: Path) -> None:
+    iterator = _iterator(tmp_path, windows=5)
+    state = iterator.state_dict()
+
+    with pytest.raises(ValueError, match="num_windows"):
+        _iterator(tmp_path, windows=6).load_state_dict(state)
+    with pytest.raises(ValueError, match="batch_size"):
+        _iterator(tmp_path, batch=3).load_state_dict(state)
+    wrong_seed = dict(state, seed=state["seed"] + 1)
+    with pytest.raises(ValueError, match="seed"):
+        _iterator(tmp_path).load_state_dict(wrong_seed)
+    with pytest.raises(ValueError, match="pos"):
+        _iterator(tmp_path).load_state_dict(dict(state, pos=99))

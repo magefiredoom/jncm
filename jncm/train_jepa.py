@@ -49,6 +49,7 @@ from jncm.train_generator import (
     build_optimizer,
     load_tokenizer,
     milestone_steps,
+    require_stream_state,
     validate_grad_accum,
 )
 from jncm.train_tokenizer import (
@@ -60,7 +61,9 @@ from jncm.train_tokenizer import (
 from jncm.utils import (
     JSONLLogger,
     atomic_torch_save,
+    capture_rng_state,
     parameter_counts,
+    restore_rng_state,
     seed_everything,
     write_done,
 )
@@ -270,6 +273,7 @@ def train(
         if not r_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {r_path}")
         checkpoint = torch.load(r_path, map_location=device)
+        require_stream_state(checkpoint, r_path)
         tokenizer.load_state_dict(checkpoint["tokenizer"])
         backbone.load_state_dict(checkpoint["backbone"])
         head.load_state_dict(checkpoint["head"])
@@ -277,6 +281,7 @@ def train(
         if target_encoder is not None and checkpoint.get("ema") is not None:
             target_encoder.load_state_dict(checkpoint["ema"])
         alarm.load_state_dict(checkpoint.get("collapse_alarm") or {})
+        train_loader.load_state_dict(checkpoint["data_state"])
         start_step = checkpoint["step"] + 1
         tok_offset = int(checkpoint.get("tok_offset", tok_offset))
         print(f"Resumed from step {start_step}")
@@ -288,6 +293,10 @@ def train(
         else torch.float32
     )
     rng = torch.Generator(device=device).manual_seed(cfg.seed)
+    if resume_path:
+        # T5.8 M2: continue the random streams, not restart them at the seed.
+        rng.set_state(checkpoint["step_rng"].cpu())
+        restore_rng_state(checkpoint["rng_state"])
 
     print(
         f"Starting JEPA joint run {run_id} (head={cfg.generator.head}, "
@@ -425,6 +434,10 @@ def train(
                 "joint_positions": joint_positions,
                 "total_positions": joint_positions,
                 "total_positions_conservative": 2 * joint_positions,
+                # T5.8 M2: where the data stream and the random streams are.
+                "data_state": train_loader.state_dict(),
+                "rng_state": capture_rng_state(),
+                "step_rng": rng.get_state(),
             }
             if milestone is not None:
                 # T5.5b F14: milestone files carry no Adam state (about 3x

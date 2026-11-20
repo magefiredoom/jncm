@@ -548,3 +548,81 @@ def test_joint_train_sec_per_step_excludes_diagnostics(
 
     last = records[-1]
     assert 0.0 < last["train_sec_per_step"] < 0.5 * last["sec_per_step"]
+
+
+# --------------------------------------------------------------------------- #
+# T5.8 (REVIEW M2): resume continues the data stream and every RNG
+# --------------------------------------------------------------------------- #
+
+
+def _assert_same(a: object, b: object, where: str = "") -> None:
+    """Recursive exact comparison of checkpoint structures."""
+    if isinstance(a, torch.Tensor):
+        assert isinstance(b, torch.Tensor) and torch.equal(a, b), where
+    elif isinstance(a, dict):
+        assert isinstance(b, dict) and a.keys() == b.keys(), where
+        for key in a:
+            _assert_same(a[key], b[key], f"{where}/{key}")
+    elif isinstance(a, (list, tuple)):
+        assert isinstance(b, (list, tuple)) and len(a) == len(b), where
+        for index, (x, y) in enumerate(zip(a, b)):
+            _assert_same(x, y, f"{where}[{index}]")
+    else:
+        assert a == b, where
+
+
+def test_joint_resume_is_bitwise_identical_to_an_uninterrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg()
+    cfg.generator.dropout = 0.1
+    cfg.generator.corrupt.mode = "swap"
+    cfg.generator.train.batch_size = 3  # 8 windows: batches straddle epoch borders
+    cfg.generator.train.eval_every = 10**9
+    cfg.generator.train.save_every = 1000
+    cfg.generator.train.milestones = [0.5, 1.0]
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (8, cfg.L)))
+
+    run_a, records_a = _run(tmp_path / "a", cfg, steps=10, ckpt=ckpt, data_dir=data_dir)
+    real_get_lr = tj.get_lr
+
+    def killing_get_lr(step: int, *args: object, **kwargs: object) -> float:
+        if step == 6:
+            raise _Killed
+        return real_get_lr(step, *args, **kwargs)
+
+    monkeypatch.setattr(tj, "get_lr", killing_get_lr)
+    with pytest.raises(_Killed):
+        _run(tmp_path / "b", cfg, steps=10, ckpt=ckpt, data_dir=data_dir)
+    monkeypatch.setattr(tj, "get_lr", real_get_lr)
+    run_b, records_b = _run(
+        tmp_path / "b", cfg, steps=10, ckpt=ckpt, data_dir=data_dir,
+        resume_path=tmp_path / "b" / "results" / "jepa_test" / "ckpt" / "latest.pt",
+    )
+
+    a = torch.load(run_a / "ckpt" / "latest.pt", map_location="cpu")
+    b = torch.load(run_b / "ckpt" / "latest.pt", map_location="cpu")
+    for part in ("tokenizer", "backbone", "head", "ema"):
+        _assert_same(a[part], b[part], part)
+    assert records_a[-1]["train_loss"] == records_b[-1]["train_loss"]
+    assert records_a[-1]["per_level_pred_loss"] == records_b[-1]["per_level_pred_loss"]
+
+
+@pytest.mark.parametrize("missing", ["data_state", "rng_state", "step_rng"])
+def test_joint_resume_refuses_a_checkpoint_without_stream_state(
+    tmp_path: Path, missing: str
+) -> None:
+    cfg = _cfg()
+    cfg.generator.train.eval_every = 2
+    cfg.generator.train.save_every = 2
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    data_dir = _write_data(tmp_path / "data", torch.randint(0, cfg.V, (4, cfg.L)))
+    run_dir, _ = _run(tmp_path, cfg, steps=2, ckpt=ckpt, data_dir=data_dir)
+    state = torch.load(run_dir / "ckpt" / "latest.pt", map_location="cpu")
+    del state[missing]
+    old = tmp_path / "old.pt"
+    torch.save(state, old)
+
+    with pytest.raises(ValueError, match=missing):
+        _run(tmp_path, cfg, steps=4, ckpt=ckpt, data_dir=data_dir, resume_path=old)
