@@ -224,6 +224,7 @@ def joint_loss(
     x: torch.Tensor,
     target_tokenizer: torch.nn.Module | None = None,
     generator: torch.Generator | None = None,
+    cut: int | None = None,
 ) -> JointStep:
     """One SPEC 8 joint loss for a token batch ``x`` of shape [B, L].
 
@@ -238,6 +239,11 @@ def joint_loss(
             ``jepa.target_chain`` selects the online (default) or ``ema_clean``
             target chain.
         generator: Single RNG for all draws; a seed reproduces the step.
+        cut: Nested-dropout cutoff for the decoder input (SPEC 4.4: one cut per
+            batch). ``None`` draws one here with ``sample_cutoff``. A trainer
+            that splits the batch into micro-batches draws it once per
+            optimizer step and passes it to every call (T5.9b, REVIEW m2);
+            otherwise each micro-batch would get its own cut.
 
     Returns:
         :class:`JointStep` with the total loss and every component, including
@@ -253,6 +259,9 @@ def joint_loss(
             f"JEPA joint mode needs head in {JEPA_HEADS}, got "
             f"{cfg.generator.head!r}"
         )
+
+    if cut is not None and not 1 <= cut <= tokenizer.K:
+        raise ValueError(f"cut must be in 1..{tokenizer.K}, got {cut}")
 
     # 1. Online encode: clean codes c_k, chain codes with channel noise, zhat.
     enc = tokenizer.encode(x, generator=generator)
@@ -290,7 +299,8 @@ def joint_loss(
     loss_pred = weighted_total(per_level, backbone.schedule, cfg.generator.alpha)
 
     # 5. L_dec with nested dropout; optional detach closes the E path.
-    cut = sample_cutoff(tokenizer.K, cfg.tokenizer.p_drop, generator=generator)
+    if cut is None:
+        cut = sample_cutoff(tokenizer.K, cfg.tokenizer.p_drop, generator=generator)
     decode_input = enc.zhat[cut]
     if not cfg.jepa.decoder_through_E:
         decode_input = decode_input.detach()

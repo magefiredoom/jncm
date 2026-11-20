@@ -699,3 +699,44 @@ def test_trainer_builds_the_alarm_with_that_patience(
     _run(tmp_path, cfg, steps=2)
 
     assert seen == [4]
+
+
+# --------------------------------------------------------------------------- #
+# T5.9b (REVIEW m2): one nested-dropout cut per optimizer step
+# --------------------------------------------------------------------------- #
+
+
+def test_one_cut_is_shared_by_every_micro_batch_of_a_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC 4.4 draws one cut per batch. With grad_accum the trainer called
+    joint_loss once per micro-batch and each call drew its own cut."""
+    cfg = _cfg()
+    cfg.generator.train.batch_size = 4
+    cfg.generator.train.grad_accum = 4  # micro-batches of one sequence
+    cfg.tokenizer.p_drop = 1.0  # always cut: Uniform{1..K-1}, so draws do vary
+    steps = 6
+    drawn: list[int] = []
+    used: list[int] = []
+    real_sample = tj.sample_cutoff
+    real_joint = tj.joint_loss
+
+    def counting_sample(*args: object, **kwargs: object) -> int:
+        cut = real_sample(*args, **kwargs)
+        drawn.append(cut)
+        return cut
+
+    def spying_joint(*args: object, **kwargs: object):
+        step = real_joint(*args, **kwargs)
+        used.append(step.cut)
+        return step
+
+    monkeypatch.setattr(tj, "sample_cutoff", counting_sample)
+    monkeypatch.setattr(tj, "joint_loss", spying_joint)
+    _, records = _run(tmp_path, cfg, steps=steps)
+
+    assert len(drawn) == steps  # one draw per optimizer step
+    assert len(used) == steps * 4  # four micro-batches each
+    for step in range(steps):
+        assert used[4 * step : 4 * step + 4] == [drawn[step]] * 4
+    assert records[-1]["cut"] == drawn[-1]

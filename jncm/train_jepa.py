@@ -47,6 +47,7 @@ from jncm.jepa.ema import EMAModule
 from jncm.jepa.joint import (
     JEPA_HEADS, TARGET_CHAINS, JointStep, joint_loss, predicted_codes,
 )
+from jncm.tokenizer.trunk import sample_cutoff
 from jncm.train_generator import (
     build_generator,
     build_optimizer,
@@ -355,6 +356,10 @@ def train(
         vic_value = 0.0
         per_level_value = [0.0] * tokenizer.K
         last_joint: JointStep | None = None
+        # T5.9b m2: SPEC 4.4 draws one nested-dropout cut per batch. Drawing it
+        # inside joint_loss would give every micro-batch its own cut (16 per
+        # step at grad_accum 16), unlike the staged tokenizer.
+        cut = sample_cutoff(tokenizer.K, cfg.tokenizer.p_drop, generator=rng)
         for micro_batch in x_batch.chunk(gen_train.grad_accum):
             with torch.autocast(
                 device_type=device.type, dtype=amp_dtype, enabled=use_autocast
@@ -367,6 +372,7 @@ def train(
                     micro_batch,
                     target_tokenizer=None if target_encoder is None else target_encoder.module,
                     generator=rng,
+                    cut=cut,
                 )
             (micro_joint.loss / gen_train.grad_accum).backward()
             loss_value += float(micro_joint.loss.detach()) / gen_train.grad_accum

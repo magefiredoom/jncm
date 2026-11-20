@@ -407,3 +407,61 @@ def test_predictions_are_deterministic_and_noiseless() -> None:
     second = predicted_codes(head_f, hidden, generator=torch.Generator().manual_seed(4))
     assert all(torch.equal(a, b) for a, b in zip(first, second))
     assert all(torch.isfinite(p).all() for p in first)
+
+
+# --------------------------------------------------------------------------- #
+# T5.9b (REVIEW m2): the nested-dropout cut can be chosen by the caller
+# --------------------------------------------------------------------------- #
+
+
+def test_joint_loss_decodes_the_cut_it_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The trainer draws one cut per optimizer step and hands it to every
+    micro-batch, so joint_loss must use it instead of drawing its own."""
+    cfg = _cfg()
+    tokenizer, backbone, head = _build(cfg)
+    x = _batch(cfg)
+    seen: dict[str, torch.Tensor] = {}
+    real_decode = tokenizer.decode
+
+    def spy_decode(zhat: torch.Tensor) -> torch.Tensor:
+        seen["zhat"] = zhat.detach().clone()
+        return real_decode(zhat)
+
+    monkeypatch.setattr(tokenizer, "decode", spy_decode)
+    # encode is the first consumer of the generator inside joint_loss, so a
+    # fresh generator with the same seed reproduces its chain.
+    reference = tokenizer.encode(x, generator=torch.Generator().manual_seed(0))
+
+    for cut in (1, 2, cfg.tokenizer.K):
+        step = joint_loss(
+            cfg, tokenizer, backbone, head, x,
+            generator=torch.Generator().manual_seed(0), cut=cut,
+        )
+        assert step.cut == cut
+        assert torch.equal(seen["zhat"], reference.zhat[cut])
+
+
+@pytest.mark.parametrize("bad", [-1, 0, 5])
+def test_joint_loss_rejects_a_cut_outside_one_to_k(bad: int) -> None:
+    cfg = _cfg()
+    assert cfg.tokenizer.K == 4
+    tokenizer, backbone, head = _build(cfg)
+
+    with pytest.raises(ValueError, match="cut"):
+        joint_loss(
+            cfg, tokenizer, backbone, head, _batch(cfg),
+            generator=torch.Generator().manual_seed(0), cut=bad,
+        )
+
+
+def test_joint_loss_still_draws_its_own_cut_by_default() -> None:
+    cfg = _cfg()
+    cfg.tokenizer.p_drop = 0.0  # never drop levels: the cut is K
+    tokenizer, backbone, head = _build(cfg)
+
+    step = joint_loss(
+        cfg, tokenizer, backbone, head, _batch(cfg),
+        generator=torch.Generator().manual_seed(0),
+    )
+
+    assert step.cut == cfg.tokenizer.K
