@@ -17,10 +17,12 @@ ablation flags live in the config and are all consumed here or in
 Periodic diagnostics log, per level, the min/mean std of ``c_k`` and ``t_k``,
 both effective ranks, the explained variance ``R2_k = 1 - MSE_k / Var(t_k)``,
 and a collapse alarm that fires after 200 consecutive steps with mean std < 0.1
-(SPEC 8). Every record carries the SPEC 6.2 joint accounting: ``joint_positions``
-= steps * B * L, ``total_positions = joint_positions`` and
-``total_positions_conservative = 2 * joint_positions`` (the count comparable to
-a staged run when both objectives are charged).
+(SPEC 8). Every record carries the joint accounting: ``joint_positions`` =
+steps * B * L, ``tok_offset`` = the staged tokenizer's ``tok_positions`` (the
+run warm-starts E and D from it, so it is charged: QUESTIONS Q14, decided by the
+researcher 2026-11-19), ``total_positions = tok_offset + joint_positions`` and
+``total_positions_conservative = tok_offset + 2 * joint_positions`` (the count
+comparable to a staged run when both objectives are charged).
 
 Milestone checkpoints (``ckpt/milestone_<pct>.pt`` at 10/25/50/100% of the
 budget) are written when ``generator.train.save_milestones`` is on (the
@@ -32,6 +34,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from pathlib import Path
+import math
 import time
 from typing import Any
 
@@ -39,7 +42,7 @@ import torch
 
 from jncm.config import Config, load_config, save_config
 from jncm.data import InfiniteBatchIterator
-from jncm.jepa.diagnostics import CollapseAlarm, code_diagnostics
+from jncm.jepa.diagnostics import COLLAPSE_PATIENCE, CollapseAlarm, code_diagnostics
 from jncm.jepa.ema import EMAModule
 from jncm.jepa.joint import (
     JEPA_HEADS, TARGET_CHAINS, JointStep, joint_loss, predicted_codes,
@@ -67,6 +70,20 @@ from jncm.utils import (
     seed_everything,
     write_done,
 )
+
+
+def collapse_patience(eval_every: int) -> int:
+    """SPEC 8's 200-step collapse window, expressed in evaluations.
+
+    The alarm is updated once per evaluation, not once per step. With the
+    default patience of 200 and ``eval_every = 500`` it would need 100,000 steps
+    of collapse, longer than any run, so it could never fire (T5.9, REVIEW m7).
+    One observation covers ``eval_every`` steps, hence ``ceil(200 / eval_every)``
+    observations (at least one).
+    """
+    if eval_every < 1:
+        raise ValueError(f"eval_every must be >= 1, got {eval_every}")
+    return max(1, math.ceil(COLLAPSE_PATIENCE / eval_every))
 
 
 def validate_jepa_config(cfg: Config) -> None:
@@ -142,6 +159,7 @@ def run_diagnostics(
     train_loss: float,
     current_lr: float,
     joint_positions: int,
+    tok_offset: int,
     sec_per_step: float,
     train_sec_per_step: float,
     data_source: str,
@@ -184,8 +202,9 @@ def run_diagnostics(
         "vicreg": bool(cfg.jepa.vicreg),
         "decoder_through_E": bool(cfg.jepa.decoder_through_E),
         "joint_positions": int(joint_positions),
-        "total_positions": int(joint_positions),
-        "total_positions_conservative": int(2 * joint_positions),
+        "tok_offset": int(tok_offset),
+        "total_positions": int(tok_offset + joint_positions),
+        "total_positions_conservative": int(tok_offset + 2 * joint_positions),
         "collapse_steps": list(alarm.counts),
         "collapse_alarm": bool(any(alarmed)),
     }
@@ -262,7 +281,7 @@ def train(
         if cfg.jepa.ema
         else None
     )
-    alarm = CollapseAlarm()
+    alarm = CollapseAlarm(patience=collapse_patience(gen_train.eval_every))
     parameters = [
         parameter for _, parameter in joint_named_parameters(tokenizer, backbone, head)
     ]
@@ -398,6 +417,7 @@ def train(
                 train_loss=float(joint.loss.detach()),
                 current_lr=curr_lr,
                 joint_positions=joint_positions,
+                tok_offset=tok_offset,
                 sec_per_step=sec_per_step,
                 train_sec_per_step=train_seconds / float(step + 1 - start_step),
                 data_source=data_source,
@@ -432,8 +452,8 @@ def train(
                 "config": asdict(cfg),
                 "tok_offset": tok_offset,
                 "joint_positions": joint_positions,
-                "total_positions": joint_positions,
-                "total_positions_conservative": 2 * joint_positions,
+                "total_positions": tok_offset + joint_positions,
+                "total_positions_conservative": tok_offset + 2 * joint_positions,
                 # T5.8 M2: where the data stream and the random streams are.
                 "data_state": train_loader.state_dict(),
                 "rng_state": capture_rng_state(),

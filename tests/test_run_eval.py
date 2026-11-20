@@ -447,15 +447,18 @@ def test_run_eval_reads_a_joint_jepa_checkpoint(tmp_path: Path) -> None:
     ):
         assert key in record, key
     joint_positions = 20 * cfg.generator.train.batch_size * cfg.L
+    # Q14: the warm-started tokenizer's positions are part of the totals.
     assert record["joint_positions"] == joint_positions
-    assert record["total_positions"] == joint_positions
-    assert record["total_positions_conservative"] == 2 * joint_positions
+    assert record["total_positions"] == TOK_POSITIONS + joint_positions
+    assert record["total_positions_conservative"] == TOK_POSITIONS + 2 * joint_positions
     assert "tok_positions" not in record and "gen_positions" not in record
     assert record["ppl_mean"] == pytest.approx(math.exp(2.0))
 
     merged = merge_shards(run_dir / "eval")
     merged_record = json.loads(merged[-1].read_text(encoding="utf-8"))
-    assert merged_record["total_positions_conservative"] == 2 * joint_positions
+    assert merged_record["total_positions_conservative"] == (
+        TOK_POSITIONS + 2 * joint_positions
+    )
 
 
 # --------------------------------------------------------------------------- #

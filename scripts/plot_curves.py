@@ -7,8 +7,9 @@ Reads the aggregate files written by ``scripts/run_eval.py``:
 as an offset (SPEC 6.2). Per-seed shards (``step_<n>.seed_<i>.json``) are
 ignored, so a merge in progress does not add half-aggregated points.
 
-The JEPA joint runs record ``total_positions = joint_positions`` and
-``total_positions_conservative = 2 * joint_positions`` (SPEC 6.2). ``--x``
+The JEPA joint runs warm-start from the staged tokenizer and are charged for it
+(QUESTIONS Q14): they record ``total_positions = tok_offset + joint_positions``
+and ``total_positions_conservative = tok_offset + 2 * joint_positions``. ``--x``
 selects which one is the x axis; with ``total_positions_conservative`` a staged
 record (which has no joint count) falls back to its own ``total_positions``, so
 both curves stay on one axis. Plot JEPA results once under each accounting.

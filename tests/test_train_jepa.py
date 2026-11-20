@@ -138,6 +138,7 @@ def test_2x2_flag_combination_runs_50_steps(
         "collapse_steps",
         "collapse_alarm",
         "joint_positions",
+        "tok_offset",
         "total_positions",
         "total_positions_conservative",
     ):
@@ -156,9 +157,11 @@ def test_2x2_flag_combination_runs_50_steps(
     assert len(last["collapse_steps"]) == cfg.tokenizer.K
 
     per_step = 50 * cfg.generator.train.batch_size * cfg.L
+    # Q14: the warm-started tokenizer (1234 positions in this fixture) is charged.
     assert last["joint_positions"] == per_step
-    assert last["total_positions"] == per_step
-    assert last["total_positions_conservative"] == 2 * per_step
+    assert last["tok_offset"] == 1234
+    assert last["total_positions"] == 1234 + per_step
+    assert last["total_positions_conservative"] == 1234 + 2 * per_step
     assert "tok_positions" not in last and "gen_positions" not in last
     assert last["train_loss"] == pytest.approx(
         last["loss_dec"] + cfg.jepa.lambda_pred * last["loss_pred"] + last["loss_vic"],
@@ -171,7 +174,8 @@ def test_2x2_flag_combination_runs_50_steps(
         assert key in state, key
     assert state["step"] == 49
     assert state["joint_positions"] == per_step
-    assert state["total_positions_conservative"] == 2 * per_step
+    assert state["total_positions"] == 1234 + per_step
+    assert state["total_positions_conservative"] == 1234 + 2 * per_step
     assert (state["ema"] is not None) is cfg.jepa.ema
 
 
@@ -261,15 +265,20 @@ def test_joint_position_accounting(tmp_path: Path) -> None:
         3 * per_step,
     ]
     for record in records:
-        assert record["total_positions"] == record["joint_positions"]
-        assert record["total_positions_conservative"] == 2 * record["joint_positions"]
+        # Q14: joint runs warm-start from the staged tokenizer and are charged for it.
+        assert record["tok_offset"] == 1234
+        assert record["total_positions"] == 1234 + record["joint_positions"]
+        assert (
+            record["total_positions_conservative"]
+            == 1234 + 2 * record["joint_positions"]
+        )
         assert "tok_positions" not in record
         assert "gen_positions" not in record
 
     state = torch.load(run_dir / "ckpt" / "latest.pt", map_location="cpu")
     assert state["joint_positions"] == 3 * per_step
-    # The tokenizer budget is still recorded, but SPEC 6.2 does not charge it.
-    assert state["tok_offset"] == 1234
+    assert state["tok_offset"] == 1234  # charged to the joint run (Q14)
+    assert state["total_positions"] == 1234 + 3 * per_step
 
 
 @pytest.mark.parametrize("target_chain", ["online", "ema_clean"])
@@ -410,7 +419,7 @@ def test_resume_continues_step_and_positions(tmp_path: Path) -> None:
     last = records[-1]
     assert last["step"] == 4
     assert last["joint_positions"] == 4 * cfg.generator.train.batch_size * cfg.L
-    assert last["total_positions"] == last["joint_positions"]
+    assert last["total_positions"] == 99 + last["joint_positions"]  # Q14
     state = torch.load(latest, map_location="cpu")
     assert state["step"] == 3
     assert state["tok_offset"] == 99
@@ -443,7 +452,10 @@ def test_milestones_are_saved_behind_the_flag(tmp_path: Path) -> None:
     assert state["milestone"] == pytest.approx(0.5)
     assert state["step"] + 1 == 5
     assert state["joint_positions"] == 5 * cfg.generator.train.batch_size * cfg.L
-    assert state["total_positions_conservative"] == 2 * state["joint_positions"]
+    assert (
+        state["total_positions_conservative"]
+        == state["tok_offset"] + 2 * state["joint_positions"]
+    )
     for key in ("tokenizer", "backbone", "head", "ema"):
         assert key in state, key
     # T5.5b F14: milestone files carry no Adam state; latest.pt still does.
@@ -626,3 +638,64 @@ def test_joint_resume_refuses_a_checkpoint_without_stream_state(
 
     with pytest.raises(ValueError, match=missing):
         _run(tmp_path, cfg, steps=4, ckpt=ckpt, data_dir=data_dir, resume_path=old)
+
+
+def test_joint_totals_charge_the_staged_tokenizer_positions(tmp_path: Path) -> None:
+    """QUESTIONS Q14 (researcher decision 2026-11-19): a JEPA run warm-starts
+    from the finished staged tokenizer, so its curves start where the staged
+    generator curves start instead of 655M positions earlier."""
+    cfg = _cfg()
+    cfg.generator.train.eval_every = 1
+    staged_tokenizer_positions = 655_360_000  # tok_noisy_10k: 10,000 x 512 x 128
+    ckpt = _save_tokenizer_ckpt(tmp_path, cfg, tok_positions=staged_tokenizer_positions)
+
+    _, records = _run(tmp_path, cfg, steps=3, ckpt=ckpt)
+
+    per_step = cfg.generator.train.batch_size * cfg.L
+    assert [record["joint_positions"] for record in records] == [
+        per_step, 2 * per_step, 3 * per_step,
+    ]
+    for record in records:
+        joint = record["joint_positions"]
+        assert record["tok_offset"] == staged_tokenizer_positions
+        assert record["total_positions"] == staged_tokenizer_positions + joint
+        assert record["total_positions_conservative"] == (
+            staged_tokenizer_positions + 2 * joint
+        )
+
+
+# --------------------------------------------------------------------------- #
+# T5.9 (REVIEW m7): the collapse alarm counts evaluations, not steps
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "eval_every,patience",
+    [(1, 200), (10, 20), (50, 4), (199, 2), (200, 1), (500, 1), (10**9, 1)],
+)
+def test_collapse_patience_is_the_spec_window_in_evaluations(
+    eval_every: int, patience: int
+) -> None:
+    """SPEC 8 asks for 200 consecutive steps, but the alarm is updated once per
+    evaluation. With eval_every=500 the old patience of 200 evaluations meant
+    100,000 steps, longer than any run, so the alarm could never fire."""
+    assert tj.collapse_patience(eval_every) == patience
+
+
+def test_trainer_builds_the_alarm_with_that_patience(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg()
+    cfg.generator.train.eval_every = 50
+    seen: list[int] = []
+    real_alarm = tj.CollapseAlarm
+
+    def recording_alarm(*args: object, **kwargs: object):
+        alarm = real_alarm(*args, **kwargs)
+        seen.append(alarm.patience)
+        return alarm
+
+    monkeypatch.setattr(tj, "CollapseAlarm", recording_alarm)
+    _run(tmp_path, cfg, steps=2)
+
+    assert seen == [4]
