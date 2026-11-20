@@ -786,3 +786,33 @@ def test_the_g2_loop_still_exports_sets_internally(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert 'SETS="jepa.vicreg=false"' in result.stdout
     assert len([line for line in _sbatch_lines(result.stdout) if "jepa.sbatch" in line]) == 7
+
+
+@pytest.mark.parametrize("value", ["0", "0.0", "0e3", "00.00"])
+def test_a_zero_sec_per_step_flag_is_rejected_with_a_clear_message(
+    tmp_path: Path, value: str
+) -> None:
+    """Second review MINOR-2: the validation said 'positive number' but accepted
+    0, and the planner then died inside awk with 'division by zero'."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run(root, ["g0", "full", f"--sec_per_step={value}"])
+
+    assert result.returncode == 2
+    assert "--sec_per_step must be a positive number" in result.stderr
+    assert "awk" not in result.stderr
+    assert not _sbatch_lines(result.stdout)
+
+
+def test_a_zero_sec_per_step_in_a_pilot_record_is_rejected_clearly(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+    _done(root, "tok_vq_10k")
+    _seed_pilot(root, "pilot_gen_vq_ce", 0.0)
+
+    result = _run(root, ["g0", "full"])
+
+    assert result.returncode == 1
+    assert "sec_per_step must be positive" in result.stderr
+    assert "pilot_gen_vq_ce" in result.stderr
+    assert "awk" not in result.stderr
+    assert not _sbatch_lines(result.stdout)

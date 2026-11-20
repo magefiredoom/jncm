@@ -190,6 +190,11 @@ esac
 if [[ -n "$CLI_SEC" && ! "$CLI_SEC" =~ ^[0-9]+([.][0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
   die "--sec_per_step must be a positive number, got '$CLI_SEC'"
 fi
+# The pattern above also accepts 0, 0.0 and 0e3; zero would divide by zero in the
+# chunk planner (second review MINOR-2), so it must fail here with a clear message.
+if [[ -n "$CLI_SEC" ]] && ! awk -v s="$CLI_SEC" 'BEGIN { exit !(s > 0) }'; then
+  die "--sec_per_step must be a positive number, got '$CLI_SEC'"
+fi
 if [[ -z "${SBATCH_ACCOUNT:-}" ]]; then
   die "SBATCH_ACCOUNT is unset; export SBATCH_ACCOUNT=<allocation> first (never guessed, SPEC 7)"
 fi
@@ -316,6 +321,10 @@ compute_chunks() {
     fi
     sec="$CLI_SEC"
     source="--sec_per_step"
+  fi
+  if ! awk -v s="$sec" 'BEGIN { exit !(s > 0) }'; then
+    echo "ERROR: ${run}: sec_per_step must be positive, got '${sec}' (${source})" >&2
+    exit 1
   fi
   plan=$(awk -v steps="$steps" -v sps="$sec" -v wall="$WALL_SECONDS" -v kind="$kind" \
     -v frac="$RESUME_FRACTION" -v tok="$TOK_RESUME_STEPS" '

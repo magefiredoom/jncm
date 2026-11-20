@@ -142,8 +142,10 @@ def load_online_tokenizer(
 
     Returns:
         ``(tokenizer, tok_positions)``; ``tok_positions`` is the tokenizer
-        budget recorded in the checkpoint (kept as bookkeeping; SPEC 6.2 does
-        not charge it to a joint run).
+        budget recorded in the checkpoint. The joint run warm-starts from this
+        tokenizer, so ``train`` charges it as ``tok_offset`` in
+        ``total_positions`` (QUESTIONS Q14, decided by the researcher
+        2026-11-19).
     """
     tokenizer, tok_positions = load_tokenizer(ckpt_path, cfg)
     for parameter in tokenizer.parameters():
