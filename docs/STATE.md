@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-20 (local only, FIR still down). All eleven findings of docs/REVIEW_2026-11-19.md are fixed and committed (T5.7a/b/c, T5.8, T5.9a/b); T5.7, T5.8 and T5.9 are ticked. VERIFIED: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `406 passed, 1 skipped, 4 deselected in 101.28s` at `5c81e17`. GPU behaviour of the new code (CUDA RNG state, bf16, timing) is UNVERIFIED until a pilot runs. The 16 pilots of 2026-11-11 run the OLD code unless FIR is pulled before they start (see Human must fill / do). Paper references verified (`paper/references_verified.md`).
+Last updated: 2026-11-20 (FIR is back; driven through the user's `newFir` zellij pane, login2). All eleven findings of docs/REVIEW_2026-11-19.md are fixed and committed (T5.7a/b/c, T5.8, T5.9a/b). **New finding: all 16 pilots of 2026-11-11 (and the 2026-11-10 timing job 3234940) were OOM-killed by Slurm** because `gen`, `jepa` and `eval.sbatch` declared no `--mem`/`--cpus-per-task` (defaults 256 MB, 1 CPU); fixed in `5c20748` (pushed), FIR `~/jncm_git` pulled to it, and ONE canary pilot (`pilot_gen_vq_ce`, job 4740492, eval 4740493) submitted. No generator or JEPA run has ever completed on FIR; GPU behaviour of the new code (CUDA RNG state, bf16, timing, milestone I/O) is UNVERIFIED until the canary reports. Paper references verified (`paper/references_verified.md`).
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -11,7 +11,7 @@ Rule: newest information wins. Rewrite sections; do not append history.
 - All five Slurm templates now exist (`prep`, `tok`, `gen`, `eval`, `jepa`); `eval.sbatch` evaluates milestone checkpoints with one array task per seed (joint JEPA checkpoints included), `jepa.sbatch` and `gen.sbatch` run arms from `SETS`, and all four training/eval templates accept an optional `CONFIG`.
 - T5.5b milestone checkpoints: the dev configs write `ckpt/milestone_<pct>.pt` every 10% (`[0.1, ..., 1.0]`), `smoke` configs keep 10/25/50/100%, milestone files omit Adam state, and `run_eval.py` evaluates exactly those by default.
 - T0.2 real data prep and the T1.2 protocol gate are now verified locally on real TinyStories data; `models/gpt2-large` is present in `models/gpt2-large`.
-- Gate G0a is done; **the pilot grid is the current step**. FIR `~/jncm_git` is at HEAD `c11fbb5` (= local), `git status` clean except the three worktree-patched sbatch templates, `~/jncm/models/gpt2-large` is present (`model.safetensors` 3.10 GB) and both launch-kit scripts are `0755`. 16 pilot jobs (g0/g1/g2 x dev/lite, `--time 00:20:00`, 5.33 H100-h requested) were submitted 2026-11-11 23:22 and were still `PENDING (Priority)` after 20 polls at 23:43, so no pilot has a record yet.
+- Gate G0a is done; **the pilot grid is the current step, relaunched as a canary**. The 16 pilots of 2026-11-11 all FAILED (OOM at Slurm's 256 MB default, see FIR jobs); fixed in `5c20748`. FIR `~/jncm_git` is at `5c20748` (= local), tracked tree clean, `~/jncm/models/gpt2-large` present (`model.safetensors` 3.10 GB), reached through `GPT2_LARGE_PATH`. Canary `pilot_gen_vq_ce` 4740492 + eval 4740493 submitted 2026-11-20.
 - G0a tokenizer jobs: 2880034 `tok_vq_10k` **COMPLETED** (`02:21:20`, final step 10000, `acc_full 0.99998` -> PASS); 2880035 `tok_noisy_10k` **COMPLETED** 2026-11-09 (`02:16:49`, final step 10000, `acc_full 0.99994` -> PASS). Both now have backfilled `DONE` files (0.848 and 0.8209 s/step). The 24 h job 2800220 was cancelled.
 
 ## FIR jobs
@@ -23,23 +23,43 @@ Rule: newest information wins. Rewrite sections; do not append history.
 
 Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the 24 h job 2800220 was cancelled. Resubmission, resume and verdict commands: `RUNBOOK.md` §2.1. Neither tokenizer run wrote a `DONE` file at the time (the FIR `~/jncm` tree predates T4.5), so on 2026-11-11 both were backfilled with the repo's own `jncm.utils.write_done` from the T4.5 checkout `~/jncm_git`: `{"step": 10000, "sec_per_step": 0.848}` and `{"step": 10000, "sec_per_step": 0.8209}` (from `sacct` `Elapsed` `02:21:20` and `02:16:49`). Completion itself is established by `sacct` plus the final metrics record at `step 10000`. Wall clock per step (startup included) is 0.85 / 0.82 s/step; use a real pilot record, not these numbers, to size a chain.
 
-### Pilot grid submitted 2026-11-11 23:22-23:23 (all still PENDING)
+### Pilot grid of 2026-11-11: all 16 jobs FAILED (polled 2026-11-20, FIR back)
 
-16 jobs, `--time 00:20:00`, 5.33 requested H100-hours in total, one GPU each. Every pilot prints `REUSE tok_vq_10k` or `REUSE tok_noisy_10k`, so no `pilot_tok_*` job exists, and every plan block reports `micro-batch 64` (dev `1024/16`, lite `256/4`). Submitted at HEAD `c11fbb5` with `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large`.
+Every training job ended `OUT_OF_MEMORY` (exit `0:125`) after 8 s to 5 min and every pilot eval `FAILED` (exit `1:0`) after 2 to 7 s (`afterany` ran them without a checkpoint). Cause: `gen`, `jepa` and `eval.sbatch` declared no `--mem` and no `--cpus-per-task`, so Slurm used its defaults (`ReqMem 256M`, `AllocCPUS 1`); `MaxRSS` was about 230 MB, the size of `import torch`, and the log says `Detected 1 oom_kill event in StepId=3566052.batch` right after `Running: python -m jncm.train_generator`. The 2026-11-10 timing job 3234940 (`pilot_gen_vq_ce`, 100 steps) died the same way (`OUT_OF_MEMORY`, `00:05:00`), so no generator or JEPA metrics record has ever existed. Only `tok.sbatch` declared 6 CPUs and 32000M, which is why only the tokenizers trained. No pilot wrote a results directory (`~/jncm_git/results` holds only `pilot_vq`, `smoke_g0a`, `tok_vq_10k`, `tok_noisy_10k`).
 
-| Gate | Config | Run ids and job ids (train, then eval) | State |
+| Gate | Config | Training job (Elapsed) | Eval job |
 | --- | --- | --- | --- |
-| g0 | dev | `pilot_gen_vq_ce` 3566052; eval 3566053 | PENDING (Priority) |
-| g1 | dev | `pilot_gen_noisy_flow` 3566054, `pilot_gen_noisy_regress` 3566055; evals 3566056/3566057 | PENDING (Priority) |
-| g2 | dev | `pilot_jepa_base` 3566058; eval 3566059 | PENDING (Priority) |
-| g0 | lite | `pilot_gen_vq_ce_lite` 3566090; eval 3566091 | PENDING (Priority) |
-| g1 | lite | `pilot_gen_noisy_flow_lite` 3566092, `pilot_gen_noisy_regress_lite` 3566093; evals 3566095/3566096 | PENDING (Priority) |
-| g2 | lite | `pilot_jepa_base_lite` 3566098; eval 3566101 | PENDING (Priority) |
+| g0 | dev | 3566052 `pilot_gen_vq_ce` OOM (00:00:43) | 3566053 FAILED |
+| g1 | dev | 3566054 `pilot_gen_noisy_flow` OOM (00:01:54); 3566055 `pilot_gen_noisy_regress` OOM (00:02:03) | 3566056, 3566057 FAILED |
+| g2 | dev | 3566058 `pilot_jepa_base` OOM (00:03:44) | 3566059 FAILED |
+| g0 | lite | 3566090 `pilot_gen_vq_ce_lite` OOM (00:00:08) | 3566091 FAILED |
+| g1 | lite | 3566092 `pilot_gen_noisy_flow_lite` OOM (00:05:00); 3566093 `pilot_gen_noisy_regress_lite` OOM (00:00:31) | 3566095, 3566096 FAILED |
+| g2 | lite | 3566098 `pilot_jepa_base_lite` OOM (00:00:33) | 3566101 FAILED |
 
-- 20 polls between 23:24 and 23:43: `rem=16` every time; `squeue -j 3566052` reason `Priority`; `sprio` ranks ~1.14M. The user's fair-share is over-used, so none started inside the polling window. No metrics exist, so `RUNBOOK.md` §0.1 cannot be applied and `scripts/budget.py` reports `MISSING <run> (pilot <pilot>): no sec_per_step` for every dev and lite run (`TOTAL 0.00 H100-hours`). Nothing was cancelled.
-- Worktree-only patches on FIR (uncommitted, `git status` shows them): `scripts/slurm/{gen,eval,jepa}.sbatch` `#SBATCH --time=HH:MM:SS` -> `00:20:00`. Slurm parses the header before the command line, so `--time=00:20:00` alone fails with `sbatch: error: Invalid --time specification`; `tok.sbatch` already carries `12:00:00` and needed no patch. Fixed in the repo 2026-11-19 (valid `01:00:00` default in all four affected templates); the FIR worktree patches must be discarded before the next pull (see "Next 3 steps").
+Fix `5c20748`: `gen`, `jepa` and `eval.sbatch` now declare `--cpus-per-task=6` and `--mem=32000M` (copied from `tok.sbatch`, not measured). Billing is unchanged: `sacct` `ReqTRES` shows `billing=12200` both for the 1-CPU/256M pilots and for the 6-CPU/32000M tokenizer job 2880034. Job 3506164 (`bitwise-2b`, account `def-cheng23_`) in the queue belongs to another project; it was not touched.
+
+### Canary submitted 2026-11-20 at HEAD `5c20748` (agent, announced to the user; nothing else submitted)
+
+Command (login2, `~/jncm_git`): `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large scripts/launch_phase.sh g0 pilot --submit` after the same command without `--submit` printed the plan; the environment held no `SETS`, `GEN_PPL`, `N_SAMPLES` or `N_SEEDS`.
+
+| Job ID | Run ID | STEPS | Time limit | Notes | State (polled 2026-11-20) |
+| --- | --- | --- | --- | --- | --- |
+| 4740492 | `pilot_gen_vq_ce` | 300 | 00:20:00 | gen.sbatch, `HEAD=ce`, `GEN_PPL=1`, reuses `results/tok_vq_10k` (DONE), 1 H100, dev config | RUNNING (started 2026-11-20, `sstat` MaxRSS 560744K at 1:41; no OOM at the old 256M limit) |
+| 4740493 | `pilot_gen_vq_ce` eval | 32 samples, 1 seed | 00:20:00 | eval.sbatch, `--array=0-0`, `--dependency=afterany:4740492`, `GPT2_LARGE_PATH` inherited | PENDING (Dependency) |
+
+The other 14 pilots are NOT resubmitted until this canary shows the new code runs on an H100 (see "Human must fill / do" step 4).
 
 ## VERIFIED (command + last lines of output)
+
+### FIR pilot failure: diagnosis and fix - VERIFIED 2026-11-20 (FIR through the `newFir` zellij pane on login2; local tests under Git Bash)
+- Channel: `hostname -f; echo ZNCM-9c42-RT; echo ACC=$SBATCH_ACCOUNT` -> `login2.int.fir.alliancecan.ca`, `ZNCM-9c42-RT`, `ACC=def-cheng23`.
+- `sacct -X -j 3234940,3566052,...,3566101 --format=JobID,JobName%26,State%12,Elapsed,Timelimit,ExitCode` -> every training job `OUT_OF_MEMO+` with `0:125` (Elapsed `00:00:08` to `00:05:00`), every eval `FAILED` with `1:0`.
+- `sacct -j 3234940,3566052,3566054,3566058,3566092 --format=JobID%16,State%12,ReqMem,MaxRSS,AllocCPUS,...` -> `ReqMem 256M`, `AllocCPUS 1`, `.batch` `MaxRSS` `230008K` to `230088K`.
+- `tail -n 6 ~/jncm_git/slurm-3566052.out` -> `... 3897200 Killed "${cmd[@]}"` and `error: Detected 1 oom_kill event in StepId=3566052.batch`.
+- `sacct -j 2880034,3566052 -X --format=JobID,ReqMem,AllocCPUS,ReqTRES%75` -> both `billing=12200` (`cpu=6,mem=32000M` versus `cpu=1,mem=256M`).
+- Fix `5c20748`: `pytest -q tests/test_sbatch_resources.py` failed first (`6 failed, 3 passed`); then, under Git Bash, `tests/test_sbatch_resources.py tests/test_sbatch_config.py tests/test_sbatch_time.py tests/test_eval_sbatch.py tests/test_chain_sh.py tests/test_launch_phase.py` -> `109 passed in 41.84s`. Under the PowerShell tool the PATH finds w64devkit's `bash.EXE` first, which cannot parse bash arrays, so `tests/test_chain_sh.py` fails there (19 failures, an environment artifact; `tests/test_sbatch_config.py` picks its bash differently). Run the suite from Git Bash.
+- FIR after the pull: `git rev-parse --short HEAD` -> `5c20748`; `grep -c '^#SBATCH --mem' scripts/slurm/{gen,jepa,eval}.sbatch` -> `1` each.
+- `scripts/launch_phase.sh g0 pilot` (dry run) printed the plan (2 jobs, 0.67 requested GPU-hours); with `--submit`: `Submitted batch job 4740492` (gen) and `Submitted batch job 4740493` (eval). Whether they run is UNVERIFIED until they finish.
 
 ### T5.7-T5.9b (REVIEW fixes) - VERIFIED 2026-11-20 (CPU, Windows, `.venv/Scripts/python.exe`)
 - Final full suite at `5c81e17`: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `406 passed, 1 skipped, 4 deselected in 101.28s (0:01:41)` (`398 passed` at `de60f3a`, `403` at `1324c03`; the last three tests cover the `eval.sbatch` GPT-2 path fix `d603888`: `GPT2_MODEL_PATH`, else `GPT2_LARGE_PATH`, else `models/gpt2-large`).
@@ -529,6 +549,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Docs: `docs/STATE.md`, `docs/TASKS.md`, `docs/QUESTIONS.md` (SPEC.md not edited).
 
 ## UNVERIFIED / not run
+- `--cpus-per-task=6` / `--mem=32000M` in `gen`, `jepa` and `eval.sbatch` are copied from `tok.sbatch`, not measured: the canary's `MaxRSS` (`sacct -j <id> --format=JobID,MaxRSS,ReqMem`) replaces them. That a 6-CPU/32000M request starts as fast as the 1-CPU one is UNVERIFIED (the billing weight is identical).
 - T5.7-T5.9a on a GPU: `torch.cuda.get_rng_state_all`/`set_rng_state_all` and `Generator.get_state`/`set_state` on CUDA (M2), `train_sec_per_step` on H100, and the about 1.5 GB `latest.pt` writes every 1,000 steps (I/O and disk on FIR). A pilot that is killed and resumed on a GPU node settles the first; the dev pilots' `train_sec_per_step` settles the second and shows whether B1's 2.1 s/step cliff matters.
 - The tokenizer trainer still writes `latest.pt` only every `train.save_every` and has no data/RNG state (B1 and M2 were not applied there: both `tok_*_10k` are DONE). Any future tokenizer rerun, such as a from-scratch JEPA ablation, needs the same change first.
 - T4.5 is syntax- and fixture-tested only: `chain.sh`/`launch_phase.sh` have never submitted a real FIR job, no pilot has been measured on an H100, and every chunk count / budget number above comes from fixtures. The launch kit also assumes `squeue` reports job ids from `sbatch` stdout in the standard `Submitted batch job <id>` form.
@@ -592,27 +613,19 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - `jepa.enabled` is not consulted by `jncm.train_jepa`; the entry point itself selects joint mode (Q13). The four SPEC 8 ablation flags (`jepa.ema`, `jepa.vicreg`, `jepa.decoder_through_E`, `generator.head`) plus `jepa.target_chain` are all consumed and tested.
 
 ## Human must fill / do
-- **FIR hand-over, in this order (needs MFA, you do it; nothing here was run by an agent):**
-  1. Local: `git push` (local `main` is ahead of `origin`; the FIR pull depends on it).
-  2. FIR, before the grid pilots start: check the run-id collision. The 2026-11-10 timing job 3234940 used the run id `pilot_gen_vq_ce`, the same as grid job 3566052. `sacct -j 3234940 -X --format=JobID,State,Elapsed` and `ls results/pilot_gen_vq_ce/ results/pilot_gen_vq_ce/DONE`. If that directory exists (a `DONE` file makes the new 300-step pilot a no-op and `budget.py` would size from the old 100-step record; a pre-T5.8 `latest.pt` makes the new code refuse the resume) and `squeue -j 3566052` still says PENDING, move it aside: `mv results/pilot_gen_vq_ce results/old_pilot_gen_vq_ce_3234940` (no `rm`). Do not move it once 3566052 is running.
-  3. FIR: `cd ~/jncm_git && git checkout -- scripts/slurm/gen.sbatch scripts/slurm/eval.sbatch scripts/slurm/jepa.sbatch && git pull --ff-only && git rev-parse HEAD` (the three worktree `00:20:00` patches must go first, or the pull refuses).
-  4. FIR: `[ -e ~/jncm_git/models ] || ln -s ~/jncm/models ~/jncm_git/models`. The eight queued pilot evals keep the OLD `eval.sbatch`, which passes `--gpt2 models/gpt2-large` relative to `~/jncm_git` and ignores `GPT2_LARGE_PATH`; the symlink lets them find GPT-2 (by the scripts, UNVERIFIED on FIR; the repo script was fixed in `d603888`).
-  5. FIR: the four G1 pilot evals (3566056, 3566057, 3566095, 3566096) fail with a head mismatch (M1). `scancel 3566056 3566057 3566095 3566096`, then resubmit each so it waits for its training job (the new `eval.sbatch` header default is 01:00:00, so `--time=00:20:00` is explicit):
-     - dev flow: `sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=00:20:00 --array=0-0 --dependency=afterany:3566054 --export=ALL,HEAD=flow,RUN_ID=pilot_gen_noisy_flow,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt,N_SAMPLES=32,N_SEEDS=1,GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large scripts/slurm/eval.sbatch`
-     - dev regress: same with `--dependency=afterany:3566055`, `HEAD=regress`, `RUN_ID=pilot_gen_noisy_regress`
-     - lite flow: same as dev flow with `--dependency=afterany:3566092`, `RUN_ID=pilot_gen_noisy_flow_lite` and `CONFIG=configs/tinystories_lite.yaml` added to the export list
-     - lite regress: `--dependency=afterany:3566093`, `HEAD=regress`, `RUN_ID=pilot_gen_noisy_regress_lite`, `CONFIG=configs/tinystories_lite.yaml`
-  6. FIR: `squeue -u $USER | grep jncm`. Pilots that start after the pull run the new Python code. Pilots that ran on the old code have wall-time `sec_per_step` only (`budget.py` and `compute_chunks` fall back to it and say so). Do not leave `SETS`, `GEN_PPL`, `N_SAMPLES` or `N_SEEDS` exported when you run `scripts/launch_phase.sh` (it refuses).
+- **FIR state and next steps (FIR is back since 2026-11-20; the agent drove it through the user's `newFir` zellij pane, every write announced):**
+  1. Done 2026-11-20: `git push` (`dfd95a9`, then `5c20748`).
+  2. Done 2026-11-20 on FIR: `git checkout -- scripts/slurm/gen.sbatch scripts/slurm/eval.sbatch scripts/slurm/jepa.sbatch` (the diff was read first: only the three `--time=00:20:00` patches), then `git pull --ff-only` -> `~/jncm_git` HEAD `5c20748`; gen, jepa and eval each carry exactly one `#SBATCH --mem` line. The untracked `slurm-*.out` logs were left in place (no `rm`).
+  3. Obsolete, no action: the `pilot_gen_vq_ce` collision check (no `results/pilot_gen_vq_ce` exists; the OOM jobs died before writing anything), the `~/jncm_git/models` symlink (the pulled `eval.sbatch` honours `GPT2_LARGE_PATH`, which the launch command sets inline), and the cancel and resubmit of the four G1 evals (all 16 jobs had already failed).
+  4. In flight: the canary 4740492/4740493 (see "FIR jobs"). When it finishes: `sacct -j 4740492,4740493 --format=JobID,State,Elapsed,Timelimit,MaxRSS,ExitCode`, `tail -n 3 ~/jncm_git/results/pilot_gen_vq_ce/metrics.jsonl`, `ls -la ~/jncm_git/results/pilot_gen_vq_ce/ckpt`. Check: `train_sec_per_step` is in the metrics, Elapsed is below the 20-minute limit (milestone writes of about 1.5 GB), `MaxRSS` is far below 32000M, and the eval found GPT-2.
+  5. If the canary is clean, relaunch the other pilots one gate per command: `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large scripts/launch_phase.sh g1 pilot --submit`, then `g2`, then the lite variants with `--config configs/tinystories_lite.yaml` (g0/g1) and `--config configs/jepa_lite.yaml` (g2). Run each without `--submit` first. Never leave `SETS`, `GEN_PPL`, `N_SAMPLES` or `N_SEEDS` exported (`launch_phase.sh` refuses).
 - **Pilot I/O risk after the pull (REVIEW advisor note):** with milestones at 10%, a 300-step pilot writes `latest.pt` (about 1.5 GB at dev size, with Adam state) plus a milestone file every 30 steps inside its `00:20:00` limit. After each pilot, compare `sacct` Elapsed with the limit; a `TIMEOUT` voids that pilot under `RUNBOOK.md` section 0.1, and the pilot then needs a longer `--time` (or `generator.train.milestones` reduced through `SETS`).
 - **F16 sweep route (settled 2026-11-20):** it is submitted with `scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 ... --export=ALL,...,SETS=generator.corrupt.p_first=0.8` (exact commands: `RUNBOOK.md` section 0.4), not through `launch_phase.sh`, so the m6 refusal does not touch it; the dry-run form parses (checked locally), a Slurm `--export` value containing `=` is UNVERIFIED until the first submission. The old example keys in the `gen.sbatch` header (`generator.corruption.p`, `tokenizer.vq.codebook_size`) did not exist and would have raised; fixed, with a test.
 - **SPEC edit (researcher only):** Q14 in `docs/QUESTIONS.md` has the exact replacement sentences for SPEC 6.2 and 8 (joint runs warm-start from the staged tokenizer and are charged `tok_offset`). The code and the paper draft already follow it.
 - Leftover from the OpenCode worktree: the directory `../jncm-wt-t57c` and `.git/worktrees/jncm-wt-t57c` could not be deleted (`Permission denied`; the `opencode serve --service` process holds it). Delete both after `opencode service restart`, or leave them; the branch is merged and removed.
-- **F16 sweep (2026-11-10) — the three `corr_p*` runs cannot be submitted yet:**
-  1. Copy GPT-2-large to FIR (MFA; local dir is 2.89 GB): `rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/`, then on FIR `export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large` and `ln -s ~/jncm/models ~/jncm_git/models`. Without it `GEN_PPL=1` and the post-run eval cannot score.
-  2. `pilot_gen_vq_ce` is queued as job 3234940 (100 steps, dev config, `grad_accum=16`, `GEN_PPL=0`). Its last record gives `sec_per_step`; the three `--time` values follow `ceil(1.3 * sec_per_step * 2000)`. No action unless the job dies.
-  3. Micro-batch decided: dev config plus `generator.train.grad_accum=16` in `SETS` (effective batch stays 1024).
+- **F16 sweep (2026-11-10):** GPT-2-large was copied to FIR by the human (2026-11-11) and `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large` works. The old timing job 3234940 died of OOM, so no `sec_per_step` exists yet; the three `--time` values follow `ceil(1.3 * sec_per_step * 2000)` once the canary reports `train_sec_per_step`. Micro-batch decided: dev config plus `generator.train.grad_accum=16` in `SETS` (effective batch stays 1024). Exact commands: `RUNBOOK.md` section 0.4.
 - T0.2 and T1.2 are complete locally (2026-11-07); no action. `models/gpt2-large` and `data/tinystories` are present on this host.
-- G0a/G0 sync status (2026-11-12): `~/jncm_git` at `c11fbb5` (= local HEAD), `git status --short` shows only the three worktree-patched sbatch templates, `data`/`results`/`.venv` symlinks resolve. `~/jncm/models/gpt2-large` exists (config.json, `model.safetensors` 3,096,165,928 bytes, tokenizer.json) and was picked up by all 16 pilots through `GPT2_LARGE_PATH`.
+- G0a/G0 sync status (2026-11-20): `~/jncm_git` at `5c20748` (= local HEAD), tracked tree clean (only untracked `slurm-*.out` logs), `data`, `results`, `.venv` present; `~/jncm_git/models` does not exist (GPT-2 is reached through `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large`, `model.safetensors` 3,096,165,928 bytes).
 - Resolved 2026-11-11: the model was rsynced by the human; the old blocker text is kept only for the record: `rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/` and `export GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large`. `~/jncm_git/models` is still not symlinked, but nothing needs it while `GPT2_LARGE_PATH` is exported.
 - Gate G0a is done for both tokenizers: 2880034 `tok_vq_10k` (`02:21:20`, `acc_full 0.99998`) and 2880035 `tok_noisy_10k` (`02:16:49`, `acc_full 0.99994`) both COMPLETED -> PASS; `DONE` backfilled 2026-11-11. Record the numbers with `RUNBOOK.md` §4.2 if a written verdict is still wanted.
 - **T4.1 placeholders — every one of them (nothing is guessed in the scripts):**
@@ -648,9 +661,9 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Nothing open locally. The fix commits were reviewed by the independent second review (see Verified) and by my own pass; a GPU pilot is what can still falsify them (CUDA RNG state, bf16, `train_sec_per_step`, I/O of the milestone writes).
-2. Human: the push, the FIR pull and the four G1 eval resubmissions above; the SPEC 6.2/8 edit from Q14. Then the bounded poll of the 16 pilots (see "FIR jobs") and `RUNBOOK.md` section 0.1.
-3. With real pilot numbers: `scripts/budget.py` (now clean) for dev versus lite (researcher decides), the F16 corruption sweep, then G0 and G1 full runs together and `gate_report.py`.
+1. Wait for the canary 4740492/4740493 and apply the checks in "Human must fill / do" step 4. It is the first time any generator code, and the whole T5.7-T5.9 series, runs on a GPU: it settles CUDA RNG capture, bf16, `train_sec_per_step`, the milestone I/O, `MaxRSS` and the GPT-2 path in the eval.
+2. If it is clean, relaunch the other pilots one gate at a time (step 5), then `RUNBOOK.md` section 0.1, `scripts/budget.py` and the researcher's dev-versus-lite decision. The SPEC 6.2/8 edit from Q14 stays with the researcher.
+3. With real pilot numbers: the F16 corruption sweep, then G0 and G1 full runs together and `gate_report.py`.
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
