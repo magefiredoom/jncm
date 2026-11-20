@@ -76,3 +76,5 @@ A Claude Doc holds the draft: https://claude.ai/artifact/3dB35J8g5cNzEYHvdCVay4 
 
 ## 12. References to verify before submission
 NCM (Kumbong et al.?), arXiv 2610.14162; Large Concept Models, arXiv 2412.08821 (Base-LCM regression versus diffusion variants); H-JEPA, arXiv 2610.06805; HiLP, arXiv 2608.05806; Korchinski et al., arXiv 2605.27734; Balestriero and LeCun on JEPAs and the Platonic representation hypothesis, arXiv 2610.39302; LLM-JEPA; VL-JEPA; AURORA-LM and other continuous-latent diffusion LMs; HDLM; VAR. Re-run the novelty search shortly before submission, especially for follow-ups from the NCM authors, who list end-to-end training as future work [verify].
+
+Verified 2026-11-20 against the arXiv pages and the NCM and LCM full texts: all IDs exist, the author of NCM is Kumbong (9 authors), and the draft's NCM and Base-LCM claims hold; HiLP is not described as JEPA in its abstract. Details and open items (bibliography keys, novelty search): `paper/references_verified.md`.
