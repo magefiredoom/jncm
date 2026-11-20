@@ -20,10 +20,18 @@ TEMPLATES = sorted(SLURM_DIR.glob("*.sbatch"))
 VALID_TIME = re.compile(r"^(\d+-)?\d{1,2}:[0-5]\d:[0-5]\d$")
 
 
-def test_all_five_templates_are_found() -> None:
+def test_all_templates_are_found() -> None:
+    """The five training and eval templates plus the CPU-only import probe (2026-11-20)."""
     names = {path.name for path in TEMPLATES}
 
-    assert names == {"prep.sbatch", "tok.sbatch", "gen.sbatch", "eval.sbatch", "jepa.sbatch"}
+    assert names == {
+        "prep.sbatch",
+        "tok.sbatch",
+        "gen.sbatch",
+        "eval.sbatch",
+        "jepa.sbatch",
+        "probe_import.sbatch",
+    }
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda path: path.name)

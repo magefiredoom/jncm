@@ -10,13 +10,20 @@ import json
 import math
 import os
 from pathlib import Path
+import sys
 from typing import Any
 import numpy as np
 import torch
 
-from jncm.data import MemmapDataset
-from jncm.eval.genppl import GPT2Scorer, gen_ppl, unigram_entropy
-from jncm.utils import seed_everything
+# `python scripts/eval_data_row.py` puts scripts/, not the repo root, on sys.path, and
+# the cluster venv has no editable install of jncm (tests/test_script_imports.py).
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from jncm.data import MemmapDataset  # noqa: E402
+from jncm.eval.genppl import GPT2Scorer, gen_ppl, unigram_entropy  # noqa: E402
+from jncm.utils import seed_everything  # noqa: E402
 
 
 def eval_real_data(

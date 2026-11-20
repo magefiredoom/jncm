@@ -5,8 +5,41 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+import time
 from typing import Any
 import torch
+
+DEFAULT_GPT2_PATH = "models/gpt2-large"
+
+
+def require_gpt2_weights(path: str | Path) -> Path:
+    """Return ``path`` as a Path, or raise FileNotFoundError if it does not exist.
+
+    Call it before anything slow starts: the scorer imports ``transformers`` and
+    loads 3 GB of weights, which took minutes from the cluster's network filesystem.
+    """
+    weights = Path(path)
+    if not weights.exists():
+        raise FileNotFoundError(
+            f"GPT-2 weights not found at {weights} (checked $GPT2_LARGE_PATH, then the "
+            "config's eval.gpt2_model_path). Run scripts/fetch_models.py first or set "
+            "$GPT2_LARGE_PATH."
+        )
+    return weights
+
+
+def resolve_gpt2_path(configured: str | Path | None = None) -> Path:
+    """GPT-2 weights directory: ``$GPT2_LARGE_PATH`` first, then the config value.
+
+    The environment wins because ``launch_phase.sh`` and the RUNBOOK export it, and the
+    config default (``models/gpt2-large``) is relative to a checkout that has no
+    ``models/`` directory on the cluster.
+
+    Raises:
+        FileNotFoundError: the chosen directory does not exist.
+    """
+    chosen = os.environ.get("GPT2_LARGE_PATH") or configured or DEFAULT_GPT2_PATH
+    return require_gpt2_weights(chosen)
 
 
 def unigram_entropy(token_id_lists: list[list[int]]) -> float:
@@ -58,13 +91,11 @@ class GPT2Scorer:
 
     def _load(self) -> None:
         if self._model is None:
+            require_gpt2_weights(self.model_path)
+            start = time.perf_counter()
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            if not self.model_path.exists():
-                raise FileNotFoundError(
-                    f"GPT-2 weights not found at {self.model_path}. "
-                    "Run scripts/fetch_models.py first or set $GPT2_LARGE_PATH."
-                )
+            imported = time.perf_counter()
             self._tokenizer = AutoTokenizer.from_pretrained(
                 str(self.model_path), local_files_only=True
             )
@@ -72,6 +103,14 @@ class GPT2Scorer:
                 str(self.model_path), local_files_only=True
             ).to(self.device)
             self._model.eval()
+            done = time.perf_counter()
+            # One line per load: on the cluster the import and the weights each took
+            # minutes from the network filesystem, and the log should say which.
+            print(
+                f"[genppl] transformers import {imported - start:.1f}s, "
+                f"GPT-2 load {done - imported:.1f}s ({self.model_path})",
+                flush=True,
+            )
 
     def score_sample(self, text: str) -> tuple[float, int]:
         """

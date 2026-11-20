@@ -700,10 +700,11 @@ def main() -> None:
     scorer: Any = None
     if args.gen_ppl:
         decode_fn = build_decode_fn(Path(args.data_dir) / "tokenizer.json")
-        from jncm.eval.genppl import GPT2Scorer
+        from jncm.eval import genppl
 
         device = str(resolve_device(cfg.device))
-        scorer = GPT2Scorer(model_path=cfg.eval.gpt2_model_path, device=device)
+        gpt2_path = genppl.resolve_gpt2_path(cfg.eval.gpt2_model_path)
+        scorer = genppl.GPT2Scorer(model_path=gpt2_path, device=device)
 
     train(
         cfg=cfg,

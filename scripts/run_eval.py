@@ -37,13 +37,25 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Any
 
 import numpy as np
 import torch
 
-from jncm.config import Config, config_from_dict, load_config
-from jncm.eval.genppl import GPT2Scorer, gen_ppl, unigram_entropy
+# `python scripts/run_eval.py` puts scripts/, not the repo root, on sys.path, and the
+# cluster venv has no editable install of jncm (tests/test_script_imports.py).
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from jncm.config import Config, config_from_dict, load_config  # noqa: E402
+from jncm.eval.genppl import (  # noqa: E402
+    GPT2Scorer,
+    gen_ppl,
+    require_gpt2_weights,
+    unigram_entropy,
+)
 from jncm.generator.backbone import GeneratorBackbone
 from jncm.generator.heads import LevelHead
 from jncm.generator.sample import sample_tokens
@@ -559,6 +571,7 @@ def main(argv: list[str] | None = None) -> None:
     seeds = None
     if args.seeds:
         seeds = [int(part) for part in args.seeds.split(",") if part.strip()]
+    require_gpt2_weights(args.gpt2)
     scorer = GPT2Scorer(model_path=args.gpt2, device=args.device)
     paths = run_eval(
         cfg,
