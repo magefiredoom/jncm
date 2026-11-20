@@ -38,6 +38,9 @@
 # defaults to models/gpt2-large. CONFIG is optional (default
 # configs/tinystories_dev.yaml); the lite runs use
 # CONFIG=configs/tinystories_lite.yaml (or configs/jepa_lite.yaml for a joint run).
+# HEAD (ce, regress or flow) is required for a staged flow or regress run (G1):
+# the YAMLs say ce/vq and run_eval.py refuses a checkpoint whose head differs.
+# Leave it unset for ce runs and for joint JEPA checkpoints.
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -60,6 +63,13 @@ if [[ -n "${CONFIG:-}" && ! -f "${config}" ]]; then
   echo "ERROR: CONFIG ${config} not found" >&2
   exit 1
 fi
+case "${HEAD:-}" in
+  "" | ce | regress | flow) ;;
+  *)
+    echo "ERROR: HEAD must be 'ce', 'regress' or 'flow', got '${HEAD}'" >&2
+    exit 2
+    ;;
+esac
 if [[ ! -f scripts/run_eval.py ]]; then
   echo "ERROR: scripts/run_eval.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -98,6 +108,9 @@ cmd=(
 )
 if [[ -n "${TOKENIZER:-}" ]]; then
   cmd+=(--tokenizer "${TOKENIZER}")
+fi
+if [[ -n "${HEAD:-}" ]]; then
+  cmd+=(--head "${HEAD}")
 fi
 cmd+=(
   --seeds "${seed}"

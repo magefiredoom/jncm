@@ -88,7 +88,7 @@ def _run_eval_sbatch(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"TOKENIZER", "RUN_ID", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
+        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
     }
     env.update({"SLURM_SUBMIT_DIR": str(root), "RUN_ID": "fake_run"})
     env.update(extra_env)
@@ -132,4 +132,33 @@ def test_missing_tokenizer_still_fails_loudly(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "not found" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout
+
+
+def test_head_is_passed_to_run_eval(tmp_path: Path) -> None:
+    """T5.7 M1: a staged flow or regress run is evaluated with --head."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"HEAD": "flow"})
+
+    assert result.returncode == 0, result.stderr
+    assert "--head flow" in result.stdout
+
+
+def test_no_head_means_no_head_flag(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {})
+
+    assert result.returncode == 0, result.stderr
+    assert "--head" not in result.stdout
+
+
+def test_an_unknown_head_is_rejected_before_anything_runs(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"HEAD": "bogus"})
+
+    assert result.returncode == 2
+    assert "HEAD must be" in result.stderr
     assert "PYTHON_ARGS" not in result.stdout

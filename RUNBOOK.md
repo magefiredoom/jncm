@@ -26,10 +26,10 @@ export SBATCH_ACCOUNT=def-cheng23     # only if your shell does not set it alrea
 Our fair-share is over-used, so a 10,000-step run submitted whole waits too
 long. The launch kit submits short chunks that chain and resume: every trainer
 writes `results/<run_id>/DONE` when its final step completes and records
-`sec_per_step` in every metrics record; `scripts/slurm/chain.sh` submits
-`ceil(steps * sec_per_step / (0.9 * wall))` copies with
-`--dependency=afterany` (each resumes from `ckpt/latest.pt`, surplus chunks
-exit 0 on `DONE`); `scripts/launch_phase.sh` builds a whole phase from that.
+`sec_per_step` and `train_sec_per_step` in every metrics record;
+`scripts/slurm/chain.sh` submits the chunks that `scripts/launch_phase.sh`
+plans (section 0.2) with `--dependency=afterany` (each resumes from
+`ckpt/latest.pt`, surplus chunks exit 0 on `DONE`); `scripts/launch_phase.sh` builds a whole phase from that.
 
 Run the pilot of a phase first and clear its checklist before the full run.
 
@@ -110,11 +110,18 @@ PPL belongs to its eval array, not the trainer). For g2 also require
 
 ### 0.2 Full runs (same launcher)
 
-`n_chunks = ceil(steps * sec_per_step / (0.9 * wall))`, with `sec_per_step`
-from the latest matching pilot record and `--wall` defaulting to `03:00:00`.
-A tokenizer run that already has `DONE` is skipped, in either config.
-Without a pilot record and without `--sec_per_step` the launcher stops with an
-error.
+A chunk keeps only the progress up to its last checkpoint, so the launcher
+plans in whole resume intervals: generator and JEPA runs write `latest.pt` at
+every 10% milestone (1,000 steps of 10,000), tokenizer runs every 5,000 steps.
+`intervals_per_chunk = floor(0.9 * wall / (interval * sec_per_step))` and
+`n_chunks = ceil(steps / (interval * intervals_per_chunk))`. If one interval
+does not fit into `0.9 * wall` the launcher stops with an error (such a chain
+would restart from the same checkpoint forever); raise `--wall`. `sec_per_step`
+is the pilot's `train_sec_per_step` (the training step alone) and falls back to
+the wall-time `sec_per_step` for pilots from before T5.7; the plan line says
+which one it used. `--wall` defaults to `03:00:00`. A tokenizer run that
+already has `DONE` is skipped, in either config. Without a pilot record and
+without `--sec_per_step` the launcher stops with an error.
 
 Every dry run ends with a plan block: the number of jobs, the total requested
 GPU-hours (chunks x `--time` x 1 GPU), the generator micro-batch size of the
@@ -292,10 +299,12 @@ sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
 ```
 
 Check `ls results/<run_id>/ckpt/latest.pt` before assuming a resume works: the
-trainer writes a checkpoint every `train.save_every` steps (5,000 in the dev
-config), so a job killed before step 5,000 restarts from scratch. If `sacct`
-shows `TIMEOUT` below step 5,000, resubmit with a larger `--time=<WALL_CLOCK>`
-instead.
+tokenizer trainer writes a checkpoint every `train.save_every` steps (5,000 in
+the dev config), so a tokenizer job killed before step 5,000 restarts from
+scratch. If `sacct` shows `TIMEOUT` below step 5,000, resubmit with a larger
+`--time=<WALL_CLOCK>` instead. Generator and JEPA trainers (since T5.7) also
+write `latest.pt` at every 10% milestone, atomically (`latest.pt.tmp`, then
+rename), so a kill costs at most one milestone interval.
 
 G0a verdict: vq `acc_full >= 0.999`, noisy `>= 0.995`, on a final record with
 `data_source = real` (SPEC 4.4). `scripts/g0a_report.py` is keyed to the
@@ -333,7 +342,10 @@ sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
   scripts/slurm/eval.sbatch
 ```
 
-The array is `0-4` (5 seeds, 256 samples each). When it has finished:
+The array is `0-4` (5 seeds, 256 samples each). When it has finished (the G1
+evals below need `HEAD=flow` / `HEAD=regress`: the YAMLs say `ce`, and
+`run_eval.py` refuses a checkpoint with another head; ce and joint JEPA
+checkpoints need no `HEAD`):
 
 ```bash
 cd ~/jncm
@@ -369,10 +381,10 @@ Evaluate and plot each run (two arrays, then two merges):
 ```bash
 cd ~/jncm
 sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
-  --export=ALL,RUN_ID=gen_noisy_flow_dev,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  --export=ALL,HEAD=flow,RUN_ID=gen_noisy_flow_dev,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
   scripts/slurm/eval.sbatch
 sbatch --account="$SBATCH_ACCOUNT" --gres=gpu:h100:1 --time=<WALL_CLOCK> \
-  --export=ALL,RUN_ID=gen_noisy_regress_dev,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
+  --export=ALL,HEAD=regress,RUN_ID=gen_noisy_regress_dev,TOKENIZER=results/tok_noisy_10k/ckpt/latest.pt \
   scripts/slurm/eval.sbatch
 python scripts/run_eval.py --run_id gen_noisy_flow_dev --merge
 python scripts/run_eval.py --run_id gen_noisy_regress_dev --merge

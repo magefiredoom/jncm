@@ -644,3 +644,31 @@ def test_planner_constants_match_the_configs_the_launch_kit_uses() -> None:
         gaps = [round(b - a, 6) for a, b in zip(grid, grid[1:])]
         assert max(gaps) <= fraction + 1e-9, (name, gaps)
         assert cfg.train.save_every <= tok_steps, name
+
+
+def _eval_lines(stdout: str) -> list[str]:
+    return [line for line in _sbatch_lines(stdout) if "eval.sbatch" in line]
+
+
+def test_every_eval_job_of_a_staged_run_passes_its_head(tmp_path: Path) -> None:
+    """T5.7 M1: eval.sbatch reads the dev YAML (head ce); without HEAD every
+    flow and regress eval fails at startup with a head mismatch."""
+    root = _fixture_repo(tmp_path)
+
+    g0 = _eval_lines(_run(root, ["g0", "pilot"]).stdout)
+    g1 = _eval_lines(_run(root, ["g1", "pilot"]).stdout)
+
+    assert len(g0) == 1 and "HEAD=ce" in g0[0]
+    flow = [line for line in g1 if "RUN_ID=pilot_gen_noisy_flow" in line]
+    regress = [line for line in g1 if "RUN_ID=pilot_gen_noisy_regress" in line]
+    assert len(flow) == 1 and "HEAD=flow" in flow[0]
+    assert len(regress) == 1 and "HEAD=regress" in regress[0]
+
+
+def test_joint_eval_jobs_carry_no_head(tmp_path: Path) -> None:
+    """A joint checkpoint's own config is authoritative (run_eval.py)."""
+    root = _fixture_repo(tmp_path)
+
+    g2 = _eval_lines(_run(root, ["g2", "pilot"]).stdout)
+
+    assert g2 and all("HEAD=" not in line for line in g2)

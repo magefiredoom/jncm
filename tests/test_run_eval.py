@@ -25,9 +25,11 @@ from jncm.train_generator import (
 from jncm.train_jepa import train as train_jepa
 from jncm.utils import seed_everything
 from scripts.run_eval import (
+    apply_head,
     discover_milestones,
     evaluate_checkpoint,
     merge_shards,
+    resolve_checkpoint_config,
     run_eval,
 )
 
@@ -454,3 +456,38 @@ def test_run_eval_reads_a_joint_jepa_checkpoint(tmp_path: Path) -> None:
     merged = merge_shards(run_dir / "eval")
     merged_record = json.loads(merged[-1].read_text(encoding="utf-8"))
     assert merged_record["total_positions_conservative"] == 2 * joint_positions
+
+
+# --------------------------------------------------------------------------- #
+# T5.7 (REVIEW M1): --head, so G1 (flow, regress) checkpoints can be evaluated
+# --------------------------------------------------------------------------- #
+
+
+def test_apply_head_selects_the_head_and_its_tokenizer_variant() -> None:
+    cfg = _smoke_cfg()  # smoke defaults: head ce, quantizer vq
+
+    assert apply_head(cfg, None) is cfg and cfg.generator.head == "ce"
+    assert (apply_head(cfg, "flow").generator.head, cfg.tokenizer.quantizer) == ("flow", "noisy")
+    assert (apply_head(cfg, "regress").generator.head, cfg.tokenizer.quantizer) == ("regress", "noisy")
+    assert (apply_head(cfg, "ce").generator.head, cfg.tokenizer.quantizer) == ("ce", "vq")
+    with pytest.raises(ValueError, match="head"):
+        apply_head(cfg, "bogus")
+
+
+def test_flow_checkpoint_needs_the_head_flag_under_the_dev_config(tmp_path: Path) -> None:
+    """eval.sbatch passes the dev YAML (head ce, quantizer vq); a flow run's
+    checkpoint was trained with head flow / quantizer noisy. The guard stays,
+    and --head is what makes the two agree."""
+    trained = _smoke_cfg()
+    trained.generator.head = "flow"
+    trained.tokenizer.quantizer = "noisy"
+    tok_ckpt = _save_tokenizer_ckpt(tmp_path, trained)
+    ckpt = _save_generator_ckpt(tmp_path / "milestone_050.pt", trained, tok_ckpt, step=9)
+    state = torch.load(ckpt, map_location="cpu")
+
+    with pytest.raises(ValueError, match="head"):
+        resolve_checkpoint_config(_smoke_cfg(), state, ckpt)
+    resolved = resolve_checkpoint_config(apply_head(_smoke_cfg(), "flow"), state, ckpt)
+
+    assert resolved.generator.head == "flow"
+    assert resolved.tokenizer.quantizer == "noisy"

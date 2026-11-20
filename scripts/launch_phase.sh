@@ -247,7 +247,8 @@ pilot_sec_per_step() {
   local path="results/$1/metrics.jsonl" field="" value=""
   if [[ -f "$path" ]]; then
     for field in train_sec_per_step sec_per_step; do
-      value=$(grep -o "\"${field}\"[[:space:]]*:[[:space:]]*[0-9.eE+-]*" "$path"         | tail -n 1 | sed -E 's/.*:[[:space:]]*//' || true)
+      value=$(grep -o "\"${field}\"[[:space:]]*:[[:space:]]*[0-9.eE+-]*" "$path" \
+        | tail -n 1 | sed -E 's/.*:[[:space:]]*//' || true)
       if [[ -n "$value" ]]; then
         printf '%s %s' "$field" "$value"
         return 0
@@ -279,7 +280,8 @@ compute_chunks() {
     sec="$CLI_SEC"
     source="--sec_per_step"
   fi
-  plan=$(awk -v steps="$steps" -v sps="$sec" -v wall="$WALL_SECONDS" -v kind="$kind"     -v frac="$RESUME_FRACTION" -v tok="$TOK_RESUME_STEPS" '
+  plan=$(awk -v steps="$steps" -v sps="$sec" -v wall="$WALL_SECONDS" -v kind="$kind" \
+    -v frac="$RESUME_FRACTION" -v tok="$TOK_RESUME_STEPS" '
     BEGIN {
       if (kind == "tok") {
         interval = tok
@@ -426,10 +428,15 @@ launch_gen() {
 }
 
 launch_eval() {
-  # launch_eval <run_id> <tokenizer or ""> <dependency>
-  local run="$1" tokenizer="$2" dep="$3" export_spec="" extra=()
+  # launch_eval <run_id> <tokenizer or ""> <dependency> [<head>]
+  # T5.7 M1: a staged run passes its head (eval.sbatch reads the dev YAML, which
+  # says ce); a joint run passes none because its checkpoint carries its config.
+  local run="$1" tokenizer="$2" dep="$3" head="${4:-}" export_spec="" extra=()
   LAUNCHED=0
   export_spec="ALL,RUN_ID=${run}"
+  if [[ -n "$head" ]]; then
+    export_spec+=",HEAD=${head}"
+  fi
   if [[ -n "$tokenizer" ]]; then
     export_spec+=",TOKENIZER=${tokenizer}"
   fi
@@ -481,7 +488,7 @@ run_g0() {
   if ((LAUNCHED)); then
     gen_dep="$(dep_after_last)"
   fi
-  launch_eval "$GEN_RUN" "results/${TOK_RUN}/ckpt/latest.pt" "$gen_dep"
+  launch_eval "$GEN_RUN" "results/${TOK_RUN}/ckpt/latest.pt" "$gen_dep" ce
 }
 
 run_g1() {
@@ -517,8 +524,8 @@ run_g1() {
   if ((LAUNCHED)); then
     regress_dep="$(dep_after_last)"
   fi
-  launch_eval "$GEN_FLOW" "results/${TOK_RUN}/ckpt/latest.pt" "$flow_dep"
-  launch_eval "$GEN_REGRESS" "results/${TOK_RUN}/ckpt/latest.pt" "$regress_dep"
+  launch_eval "$GEN_FLOW" "results/${TOK_RUN}/ckpt/latest.pt" "$flow_dep" flow
+  launch_eval "$GEN_REGRESS" "results/${TOK_RUN}/ckpt/latest.pt" "$regress_dep" regress
 }
 
 run_g2() {

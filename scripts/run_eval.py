@@ -102,6 +102,36 @@ def tokenizer_from_joint_checkpoint(
     return tokenizer
 
 
+# SPEC 5.3: the head fixes the tokenizer variant (same pairing as gen.sbatch).
+HEAD_QUANTIZER = {"ce": "vq", "regress": "noisy", "flow": "noisy"}
+
+
+def apply_head(cfg: Config, head: str | None) -> Config:
+    """Select the generator head, and the tokenizer variant it pairs with.
+
+    A staged run's checkpoint is checked against the CLI config
+    (``resolve_checkpoint_config``). The shipped YAMLs say ``ce`` / ``vq``, so a
+    ``flow`` or ``regress`` run (G1) needs this override or its evaluation stops
+    with a head mismatch (T5.7, REVIEW M1). ``None`` leaves the config alone.
+
+    Args:
+        cfg: Config loaded from the CLI YAML (modified in place).
+        head: ``ce``, ``regress``, ``flow`` or ``None``.
+
+    Returns:
+        ``cfg``.
+    """
+    if head is None:
+        return cfg
+    if head not in HEAD_QUANTIZER:
+        raise ValueError(
+            f"head must be one of {sorted(HEAD_QUANTIZER)}, got {head!r}"
+        )
+    cfg.generator.head = head
+    cfg.tokenizer.quantizer = HEAD_QUANTIZER[head]
+    return cfg
+
+
 def resolve_checkpoint_config(
     cfg: Config, state: dict[str, Any], checkpoint: Path
 ) -> Config:
@@ -465,6 +495,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--run_id", required=True, help="results/<run_id> of the generator run")
     parser.add_argument("--config", type=str, default="configs/tinystories_dev.yaml")
     parser.add_argument(
+        "--head",
+        choices=sorted(HEAD_QUANTIZER),
+        default=None,
+        help=(
+            "generator head of a staged run (sets the tokenizer variant too); "
+            "required for flow/regress because the YAMLs say ce/vq. Not needed "
+            "for joint JEPA checkpoints, which carry their own config."
+        ),
+    )
+    parser.add_argument(
         "--tokenizer",
         type=str,
         default=None,
@@ -507,7 +547,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"wrote {path}")
         return
 
-    cfg = load_config(args.config)
+    cfg = apply_head(load_config(args.config), args.head)
     seeds = None
     if args.seeds:
         seeds = [int(part) for part in args.seeds.split(",") if part.strip()]
