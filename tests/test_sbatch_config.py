@@ -174,3 +174,20 @@ def test_gen_sbatch_rejects_a_sets_entry_without_key_value(tmp_path: Path) -> No
 
     assert result.returncode == 2
     assert "not key=value" in result.stderr
+
+
+def test_gen_sbatch_header_example_is_a_valid_override() -> None:
+    """The example in the header once named keys that do not exist
+    (generator.corruption.p, tokenizer.vq.codebook_size); an unknown key raises,
+    so anyone copying it would have lost a Slurm job."""
+    import re
+
+    from jncm.config import load_config
+
+    text = Path("scripts/slurm/gen.sbatch").read_text(encoding="utf-8")
+    example = re.search(r'Example: SETS="([^"]+)"', text)
+    assert example, "gen.sbatch lost its SETS example"
+
+    cfg = load_config("configs/tinystories_dev.yaml", overrides=example.group(1).split())
+
+    assert cfg.generator.corrupt.p_first == 0.5

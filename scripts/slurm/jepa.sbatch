@@ -53,10 +53,12 @@
 #
 # Wall-clock limits are usually shorter than the dev budget. Resubmitting the
 # same command with the same SETS resumes from results/<RUN_ID>/ckpt/latest.pt,
-# which the trainer rewrites every generator.train.save_every steps (5000 in
-# configs/jepa_dev.yaml), so at most that many steps are redone. Milestone
-# checkpoints (10/25/50/100% of the budget) are written behind
-# generator.train.save_milestones.
+# which the trainer replaces atomically at every milestone (10% of the steps:
+# 1,000 of 10,000 in configs/jepa_dev.yaml) and every generator.train.save_every
+# steps, so at most one milestone interval is redone. Milestone files
+# (milestone_*.pt, no optimizer state, used by run_eval.py) are written behind
+# generator.train.save_milestones. The resume continues the data stream and the
+# random draws exactly (a checkpoint from before T5.8 is refused).
 
 set -euo pipefail
 

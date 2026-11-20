@@ -198,3 +198,19 @@ def test_rejects_a_missing_template() -> None:
 
     assert result.returncode == 2
     assert "not found" in result.stderr
+
+
+def test_sets_travels_inside_the_export_list_for_the_f16_sweep() -> None:
+    """The F16 corruption runs go through chain.sh with SETS in --export, not as
+    an exported shell variable (launch_phase.sh refuses leaked SETS, T5.7 m6)."""
+    export = (
+        "--export=ALL,HEAD=ce,RUN_ID=corr_p080,STEPS=2000,GEN_PPL=1,"
+        "TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,"
+        "SETS=generator.corrupt.p_first=0.8"
+    )
+
+    result = _run(["scripts/slurm/gen.sbatch", "1", export, "--wall=00:45:00"])
+
+    assert result.returncode == 0, result.stderr
+    commands = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
+    assert len(commands) == 1 and export in commands[0]

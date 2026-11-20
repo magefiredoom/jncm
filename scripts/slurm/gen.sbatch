@@ -36,7 +36,9 @@
 # pilots pass STEPS=300.
 # SETS is an optional space-separated list of ablation overrides, each written
 # as key=value and passed as its own --set key=value. A leading "--set=" is
-# tolerated. Example: SETS="generator.corruption.p=0.2 tokenizer.vq.codebook_size=256".
+# tolerated. Example: SETS="generator.corrupt.p_first=0.5 generator.corrupt.p_last=0.2"
+# (an unknown key raises, so a typo cannot run silently). SETS travels inside
+# --export=ALL,SETS=..., never as an exported shell variable.
 # GEN_PPL=1 appends --gen_ppl, which decodes the samples
 # and scores them through the local GPT-2-large (offline; config
 # eval.gpt2_model_path, models/gpt2-large); the pilots always turn it on.
@@ -46,8 +48,10 @@
 #
 # Wall-clock limits are usually shorter than the dev budget. Resubmitting the
 # same command resumes from results/<RUN_ID>/ckpt/latest.pt, which the trainer
-# rewrites every generator.train.save_every steps (5000 in the dev config), so
-# at most that many steps are redone.
+# replaces atomically at every milestone (10% of the steps: 1,000 of 10,000 in
+# the dev config) and every generator.train.save_every steps, so at most one
+# milestone interval is redone. The resume continues the data stream and the
+# random draws exactly (a checkpoint from before T5.8 is refused).
 
 set -euo pipefail
 

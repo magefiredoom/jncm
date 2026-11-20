@@ -187,6 +187,34 @@ and lite files is byte-identical (a test enforces it): both configs share
 lite full run skips the tokenizer exactly like a dev one and `budget.py`
 projects the tokenizer rows unsuffixed.
 
+### 0.4 F16 corruption sweep (three short ce runs, after the pilots)
+
+The sweep does not go through `launch_phase.sh`: it needs a `SETS` override and
+its own run ids, and `launch_phase.sh` refuses to run while `SETS`, `GEN_PPL`,
+`N_SAMPLES` or `N_SEEDS` is set in the shell (they would reach every job through
+`--export=ALL`). `SETS` travels inside `--export` instead, which is not a shell
+variable. `--wall` is `ceil(1.3 * train_sec_per_step * 2000)` seconds from the
+`pilot_gen_vq_ce` record, written `HH:MM:SS`; one chunk is enough (2,000 steps
+write `latest.pt` at every 200). If the lite configuration was chosen, add
+`CONFIG=configs/tinystories_lite.yaml` to each `--export` list and use the run
+ids `corr_p080_lite`, `corr_p050_lite`, `corr_p030_lite`.
+
+```bash
+cd ~/jncm_git
+scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 --wall=<WALL_CLOCK> --submit \
+  --export=ALL,HEAD=ce,RUN_ID=corr_p080,STEPS=2000,GEN_PPL=1,TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,SETS=generator.corrupt.p_first=0.8
+scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 --wall=<WALL_CLOCK> --submit \
+  --export=ALL,HEAD=ce,RUN_ID=corr_p050,STEPS=2000,GEN_PPL=1,TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,SETS=generator.corrupt.p_first=0.5
+scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 --wall=<WALL_CLOCK> --submit \
+  --export=ALL,HEAD=ce,RUN_ID=corr_p030,STEPS=2000,GEN_PPL=1,TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,SETS=generator.corrupt.p_first=0.3
+```
+
+`p_last` stays 0.2. Without `--submit` each command is a dry run. Evaluate the
+final checkpoint of each run with 64 samples and one seed
+(`N_SAMPLES=64,N_SEEDS=1,HEAD=ce` in `--export` of `eval.sbatch`) and report Gen
+PPL, H, `pairwise_agree` and the final training loss in one table; the
+researcher picks `p_first`.
+
 ## 1. Syncing FIR
 
 ### 1.1 Code: private git remote (preferred) — this is how code updates work
