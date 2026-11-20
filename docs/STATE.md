@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-20 (local only, FIR still down). All eleven findings of docs/REVIEW_2026-11-19.md are fixed and committed (T5.7a/b/c, T5.8, T5.9a/b); T5.7, T5.8 and T5.9 are ticked. VERIFIED: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `398 passed, 1 skipped, 4 deselected in 173.06s` at `de60f3a`. GPU behaviour of the new code (CUDA RNG state, bf16, timing) is UNVERIFIED until a pilot runs. The 16 pilots of 2026-11-11 run the OLD code unless FIR is pulled before they start (see Human must fill / do). Paper references verified (`paper/references_verified.md`).
+Last updated: 2026-11-20 (local only, FIR still down). All eleven findings of docs/REVIEW_2026-11-19.md are fixed and committed (T5.7a/b/c, T5.8, T5.9a/b); T5.7, T5.8 and T5.9 are ticked. VERIFIED: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `403 passed, 1 skipped, 4 deselected in 102.31s` at `1324c03`. GPU behaviour of the new code (CUDA RNG state, bf16, timing) is UNVERIFIED until a pilot runs. The 16 pilots of 2026-11-11 run the OLD code unless FIR is pulled before they start (see Human must fill / do). Paper references verified (`paper/references_verified.md`).
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -42,7 +42,9 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 ## VERIFIED (command + last lines of output)
 
 ### T5.7-T5.9b (REVIEW fixes) - VERIFIED 2026-11-20 (CPU, Windows, `.venv/Scripts/python.exe`)
-- Final full suite at `de60f3a`: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `398 passed, 1 skipped, 4 deselected in 173.06s (0:02:53)`.
+- Final full suite at `1324c03`: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `403 passed, 1 skipped, 4 deselected in 102.31s (0:01:42)` (it was `398 passed` at `de60f3a`, before the second-review fixes).
+- Second review (OpenCode on a snapshot, `docs/REVIEW_2026-11-20_second_reviewer.md`): 0 blocker, 0 major, 3 minor. Fixed after checking each: a zero `sec_per_step` (reproduced: awk `division by zero attempted`) and a stale Q14 docstring; the shell-probe finding is not adopted (an artifact of the reviewer's PATH). `tests/test_launch_phase.py tests/test_budget.py tests/test_chain_sh.py tests/test_train_jepa.py -m "not slow"` -> `121 passed in 73.89s`.
+- Paper references (`paper/references_verified.md`): all six arXiv IDs of HANDOFF section 12 exist and match, LLM-JEPA, VL-JEPA, HDLM, VAR and AURORA-LM were found; the NCM claims of the draft (4 to 5x fewer training tokens counting tokenizer training, one decode, end-to-end as future work, TinyStories reference numbers) and the Base-LCM comparison hold in the full texts (read through a page-fetching helper, so quotes should be re-read once before submission). Q15 records that NCM replaces codes uniformly from the codebook while SPEC `swap` draws another position's code.
 - m2 (`c37fdef`): `tests/test_jepa_joint.py tests/test_train_jepa.py tests/test_tokenizer.py -m "not slow"` -> `65 passed, 1 skipped in 39.29s`; the new tests failed first (`TypeError: joint_loss() got an unexpected keyword argument 'cut'`). The bitwise-resume tests still pass.
 - m3 (`de60f3a`): `tests/test_generator_backbone.py tests/test_train_generator.py tests/test_generator_heads.py tests/test_jepa_joint.py tests/test_train_jepa.py tests/test_generator_sample.py -m "not slow"` -> `119 passed, 4 deselected in 74.40s`; before the fix the contributions were bfloat16 under CPU autocast (`assert [torch.bfloat16 ...] == [torch.float32 ...]`).
 - Full suite at `09086d0`: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` -> `387 passed, 1 skipped, 4 deselected in 112.52s (0:01:52)`.
@@ -636,7 +638,7 @@ Pilot 2796353 (`pilot_vq`, 500 steps, 20 min limit) COMPLETED in `00:09:05`; the
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. `/review` of the fix commits (`e89aa75..HEAD`) before any big GPU spend, together with the findings of the independent second review (OpenCode on a snapshot, written to a scratch `FINDINGS.md`; its result is not part of this repo until read and triaged).
+1. Nothing open locally. The fix commits were reviewed by the independent second review (see Verified) and by my own pass; a GPU pilot is what can still falsify them (CUDA RNG state, bf16, `train_sec_per_step`, I/O of the milestone writes).
 2. Human: the push, the FIR pull and the four G1 eval resubmissions above; the SPEC 6.2/8 edit from Q14. Then the bounded poll of the 16 pilots (see "FIR jobs") and `RUNBOOK.md` section 0.1.
 3. With real pilot numbers: `scripts/budget.py` (now clean) for dev versus lite (researcher decides), the F16 corruption sweep, then G0 and G1 full runs together and `gate_report.py`.
 
