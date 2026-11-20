@@ -67,6 +67,7 @@ from jncm.utils import (
     atomic_torch_save,
     capture_rng_state,
     parameter_counts,
+    resolve_device,
     restore_rng_state,
     seed_everything,
     write_done,
@@ -237,10 +238,7 @@ def train(
     if max_steps is not None:
         gen_train.max_steps = max_steps
 
-    device_str = cfg.device
-    if device_str == "cuda" and not torch.cuda.is_available():
-        device_str = "cpu"
-    device = torch.device(device_str)
+    device = resolve_device(cfg.device)
 
     if run_id is None:
         ts = time.strftime("%Y%m%d_%H%M%S")

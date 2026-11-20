@@ -46,6 +46,7 @@ from jncm.utils import (
     atomic_torch_save,
     capture_rng_state,
     parameter_counts,
+    resolve_device,
     restore_rng_state,
     seed_everything,
     write_done,
@@ -449,10 +450,7 @@ def train(
     if max_steps is not None:
         gen_train.max_steps = max_steps
 
-    device_str = cfg.device
-    if device_str == "cuda" and not torch.cuda.is_available():
-        device_str = "cpu"
-    device = torch.device(device_str)
+    device = resolve_device(cfg.device)
 
     if run_id is None:
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -704,7 +702,7 @@ def main() -> None:
         decode_fn = build_decode_fn(Path(args.data_dir) / "tokenizer.json")
         from jncm.eval.genppl import GPT2Scorer
 
-        device = "cuda" if torch.cuda.is_available() and cfg.device == "cuda" else "cpu"
+        device = str(resolve_device(cfg.device))
         scorer = GPT2Scorer(model_path=cfg.eval.gpt2_model_path, device=device)
 
     train(

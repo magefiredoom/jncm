@@ -81,6 +81,8 @@ export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export PYTHONUNBUFFERED=1
+# A GPU job must stop when it sees no GPU instead of training on the CPU.
+export JNCM_REQUIRE_CUDA=1
 
 ckpt="results/${run_id}/ckpt/latest.pt"
 

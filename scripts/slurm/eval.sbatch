@@ -17,8 +17,10 @@
 #   Widen or narrow it together with N_SEEDS.
 # TODO(placeholder): GPU type -- --gres=gpu:1 asks for one generic GPU; add a
 #   type (for example gpu:A100:1) only if your FIR partition requires it.
-# TODO(placeholder): modules -- add 'module load ...' lines if your cluster
-#   needs them. None are guessed here.
+# Modules: FIR supplies python 3.12 through the module system; it is loaded below
+#   before the venv, exactly as tok.sbatch does (the tokenizer jobs that did so ran on
+#   cuda; the 2026-11-20 canary without it logged "CUDA driver initialization failed",
+#   cause not yet confirmed).
 # TODO(placeholder): venv -- this script sources .venv/bin/activate at the repo
 #   root (docs/STATE.md, Environment). Change the path if yours differs.
 #
@@ -91,6 +93,7 @@ if [[ ! -d "results/${RUN_ID}/ckpt" ]]; then
 fi
 
 # Cluster environment from docs/STATE.md "Environment".
+module load python/3.12
 if [[ ! -f .venv/bin/activate ]]; then
   echo "ERROR: .venv/bin/activate not found; create the cluster venv (docs/STATE.md)" >&2
   exit 1
@@ -102,6 +105,8 @@ export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export PYTHONUNBUFFERED=1
+# A GPU job must stop when it sees no GPU instead of scoring on the CPU.
+export JNCM_REQUIRE_CUDA=1
 
 n_seeds="${N_SEEDS:-5}"
 n_samples="${N_SAMPLES:-256}"

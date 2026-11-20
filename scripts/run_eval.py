@@ -54,7 +54,7 @@ from jncm.train_generator import (
     diversity_metrics,
     load_tokenizer,
 )
-from jncm.utils import parameter_counts, seed_everything
+from jncm.utils import parameter_counts, resolve_device, seed_everything
 
 SHARD_RE = re.compile(r"^step_\d{6}\.seed_\d+\.json$")
 METRIC_KEYS = ("ppl", "h_gpt2", "h_dataset", "unique_frac", "pairwise_agree")
@@ -531,7 +531,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--gpt2", type=str, default=default_gpt2)
     parser.add_argument(
-        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+        "--device",
+        type=str,
+        default=None,
+        help=(
+            "default: cuda, or the CPU when no GPU is visible, unless "
+            "JNCM_REQUIRE_CUDA=1 (the Slurm templates), which then raises"
+        ),
     )
     parser.add_argument("--results", type=str, default="results")
     parser.add_argument(
@@ -547,6 +553,8 @@ def main(argv: list[str] | None = None) -> None:
             print(f"wrote {path}")
         return
 
+    if args.device is None:
+        args.device = str(resolve_device("cuda"))
     cfg = apply_head(load_config(args.config), args.head)
     seeds = None
     if args.seeds:

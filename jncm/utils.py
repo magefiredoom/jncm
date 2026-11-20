@@ -16,6 +16,34 @@ import torch
 # (T4.5). The Slurm templates exit 0 immediately when it exists.
 DONE_FILE = "DONE"
 
+# The Slurm templates set this to "1": a GPU job that cannot see a GPU must stop. On
+# 2026-11-20 the first canary pilot logged "CUDA driver initialization failed", trained
+# on the CPU without a word and was OOM-killed at 32 GB four minutes later.
+REQUIRE_CUDA_ENV = "JNCM_REQUIRE_CUDA"
+
+
+def resolve_device(requested: str) -> torch.device:
+    """Return the device to run on for a config's ``device`` value.
+
+    ``"cuda"`` falls back to the CPU when no GPU is visible (the CPU tests and a
+    laptop run rely on that), unless ``JNCM_REQUIRE_CUDA=1`` is set, as the Slurm
+    templates do; then it raises. Any other request, ``"cpu"`` included, is returned
+    as asked.
+
+    Raises:
+        RuntimeError: ``requested`` is ``"cuda"``, no GPU is visible and
+            ``JNCM_REQUIRE_CUDA=1``.
+    """
+    if requested == "cuda" and not torch.cuda.is_available():
+        if os.environ.get(REQUIRE_CUDA_ENV) == "1":
+            raise RuntimeError(
+                f"device 'cuda' was requested and {REQUIRE_CUDA_ENV}=1, but "
+                "torch.cuda.is_available() is False on this host; refusing to fall "
+                "back to the CPU (check the GPU allocation, the driver and the modules)"
+            )
+        return torch.device("cpu")
+    return torch.device(requested)
+
 
 def write_done(run_dir: str | Path, *, step: int, sec_per_step: float) -> Path:
     """Write ``results/<run_id>/DONE`` after the final training step (T4.5).

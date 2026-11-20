@@ -21,7 +21,13 @@ import torch.nn.functional as F
 from jncm.config import Config, load_config, save_config
 from jncm.data import InfiniteBatchIterator, MemmapDataset
 from jncm.tokenizer.trunk import MultiscaleTokenizer
-from jncm.utils import JSONLLogger, bits_per_position, seed_everything, write_done
+from jncm.utils import (
+    JSONLLogger,
+    bits_per_position,
+    resolve_device,
+    seed_everything,
+    write_done,
+)
 
 
 def get_git_sha() -> str:
@@ -234,10 +240,7 @@ def train(
     if max_steps is not None:
         cfg.train.max_steps = max_steps
 
-    device_str = cfg.device
-    if device_str == "cuda" and not torch.cuda.is_available():
-        device_str = "cpu"
-    device = torch.device(device_str)
+    device = resolve_device(cfg.device)
 
     if run_id is None:
         ts = time.strftime("%Y%m%d_%H%M%S")
