@@ -240,6 +240,12 @@ def test_run_table_covers_the_seven_jepa_arms(tmp_path: Path, step: int) -> None
     }
 
 
+def _done(root: Path, run_id: str) -> None:
+    directory = root / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "DONE").write_text("{}\n", encoding="utf-8")
+
+
 def test_prefers_train_sec_per_step_over_wall_time(tmp_path: Path) -> None:
     """T5.7 m1: wall time includes diagnostics, Gen PPL and checkpoint saves."""
     _all_pilots(tmp_path, 9.0)  # wall time only: would be 25 h per run
@@ -254,3 +260,89 @@ def test_prefers_train_sec_per_step_over_wall_time(tmp_path: Path) -> None:
     assert budget.pilot_sec_per_step(tmp_path, "pilot_tok_vq") == 9.0  # older pilot
     result = _run(tmp_path)
     assert "train_sec_per_step" in result.stdout
+
+
+def test_a_done_tokenizer_is_finished_zero_hours_not_missing(tmp_path: Path) -> None:
+    """T5.7 m5(a): results/<run>/DONE prints 0.00 hours, never MISSING."""
+    _done(tmp_path, "tok_vq_10k")
+    _write_pilot(tmp_path, "pilot_gen_vq_ce", 1.0)
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1  # everything else is still missing
+    assert "MISSING tok_vq_10k" not in result.stdout
+    assert re.search(r"^G0 +tok_vq_10k +10000 +DONE +0\.00$", result.stdout, re.M)
+    # The DONE row counts as measured (0.00 h), so it joins the total.
+    assert "TOTAL: 2.78 H100-hours over 2 run(s)" in result.stdout
+    assert "MISSING gen_vq_ce_dev (pilot pilot_gen_vq_ce)" not in result.stdout
+    assert "MISSING gen_noisy_flow_dev (pilot pilot_gen_noisy_flow)" in result.stdout
+
+
+def test_total_covers_all_twelve_runs_with_done_tokenizers(tmp_path: Path) -> None:
+    """T5.7 m5: DONE tokenizers (0 h), generator pilots and the base pilot."""
+    _done(tmp_path, "tok_vq_10k")
+    _done(tmp_path, "tok_noisy_10k")
+    _write_pilot(tmp_path, "pilot_gen_vq_ce", 1.0)
+    _write_pilot(tmp_path, "pilot_gen_noisy_flow", 1.0)
+    _write_pilot(tmp_path, "pilot_gen_noisy_regress", 1.0)
+    _write_pilot(tmp_path, "pilot_jepa_base", 1.0)
+    # No ablation pilot exists on purpose: the ablations read the base pilot.
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "MISSING" not in result.stdout
+    assert "FLAG" not in result.stdout
+    # 10 measured runs x 2.78 h + the two DONE tokenizer rows at 0.00 hours.
+    assert "TOTAL: 27.78 H100-hours over 12 run(s)" in result.stdout
+    for phase in ("G0", "G1", "G2"):
+        assert f"{phase} subtotal:" in result.stdout
+
+
+def test_ablations_are_projected_from_the_base_pilot(tmp_path: Path) -> None:
+    """T5.7 m5(b): the six G2 ablation rows reuse pilot_jepa_base's measurement."""
+    _all_pilots(tmp_path, 1.0)
+    _write_pilot(tmp_path, "pilot_jepa_base", 5.0)
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1  # the base and every ablation are flagged
+    assert "FLAG jepa_base_dev" in result.stdout
+    for run_id in (
+        "jepa_no_vicreg_dev",
+        "jepa_no_dec_through_E_dev",
+        "jepa_neither_dev",
+        "jepa_ema_clean_dev",
+        "jepa_regress_dev",
+        "jepa_no_ema_dev",
+    ):
+        assert re.search(rf"^G2 +{run_id} +10000 +5\.0000 +13\.89", result.stdout, re.M)
+
+
+def test_lite_ablations_are_sized_from_the_lite_base_pilot(tmp_path: Path) -> None:
+    """T5.7 m5: the ablation fallback carries the config suffix (_lite)."""
+    _done(tmp_path, "tok_vq_10k")
+    _done(tmp_path, "tok_noisy_10k")
+    _write_pilot(tmp_path, "pilot_gen_vq_ce_lite", 1.0)
+    _write_pilot(tmp_path, "pilot_gen_noisy_flow_lite", 1.0)
+    _write_pilot(tmp_path, "pilot_gen_noisy_regress_lite", 1.0)
+    _write_pilot(tmp_path, "pilot_jepa_base_lite", 1.0)
+    # No ablation _lite pilot exists on purpose: they read the base _lite pilot.
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/budget.py",
+            "--results",
+            str(tmp_path),
+            "--config",
+            "configs/jepa_lite.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "MISSING" not in result.stdout
+    assert re.search(r"^G2 +jepa_no_vicreg_lite +10000 +1\.0000", result.stdout, re.M)
+    assert "TOTAL: 27.78 H100-hours over 12 run(s)" in result.stdout

@@ -45,16 +45,35 @@
 #   sec_per_step is train_sec_per_step (training step only) or, for pilots that
 #   predate it, sec_per_step, from the latest matching pilot
 #   results/<pilot>/metrics.jsonl, else --sec_per_step; with none of them the
-#   phase stops with an error. The default
-#   wall is 03:00:00: our fair-share is over-used, so the kit prefers short
-#   chunks that chain and resume (scripts/slurm/chain.sh). Tokenizer submission
-#   is skipped when results/tok_*_10k/DONE exists, for either config.
+#   phase stops with an error. A G2 ablation never flies a pilot of its own
+#   (T5.7 m4): without a measurement of its own it is sized from the base
+#   pilot, and the plan line says so. The default wall is 03:00:00: our
+#   fair-share is over-used, so the kit prefers short chunks that chain and
+#   resume (scripts/slurm/chain.sh). Tokenizer submission is skipped when
+#   results/tok_*_10k/DONE exists, for either config.
 #
 # After the eval arrays finish, merge each run:
 #   python scripts/run_eval.py --run_id <run> --merge
 # then judge the gate with python scripts/gate_report.py.
 
 set -euo pipefail
+
+# T5.7 m6: chain.sh passes --export=ALL, so an exported SETS, GEN_PPL,
+# N_SAMPLES or N_SEEDS in this environment would be forwarded to every
+# submitted job (a leftover SETS from a corruption sweep would silently
+# reconfigure all of them). Refuse to run when any of them is set at all,
+# even to an empty string -- never silently unset them. (The internal
+# `export SETS` in the G2 loop below happens after this check and keeps
+# working.)
+for _leaked in SETS GEN_PPL N_SAMPLES N_SEEDS; do
+  if [[ -n "${!_leaked+x}" ]]; then
+    echo "ERROR: environment variable ${_leaked} is set, but chain.sh" >&2
+    echo "       passes --export=ALL: it would be forwarded to every submitted" >&2
+    echo "       job. Unset it and run again (refusing to unset it silently)." >&2
+    exit 2
+  fi
+done
+unset _leaked
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
@@ -261,7 +280,7 @@ pilot_sec_per_step() {
 CHUNKS=1
 compute_chunks() {
   # compute_chunks <run_id> <steps> <tok|gen>: sets CHUNKS for the current mode.
-  local run="$1" steps="$2" kind="$3" pilot="" measured="" field="" sec="" source="" plan="" tag="" interval="" per=""
+  local run="$1" steps="$2" kind="$3" pilot="" measured="" field="" sec="" source="" plan="" tag="" interval="" per="" base_pilot="" base_measured="" arm=""
   CHUNKS=1
   if [[ "$MODE" == "pilot" ]]; then
     return 0
@@ -269,6 +288,24 @@ compute_chunks() {
   pilot="$(pilot_id "$(base_id "$run")")"
   measured="$(pilot_sec_per_step "$pilot")"
   source="pilot ${pilot}"
+  if [[ -z "$measured" ]]; then
+    # T5.7 m4: a G2 ablation never flies a pilot of its own; when the base
+    # pilot (pilot_jepa_base, same config suffix) has a measurement, size
+    # the ablation from it and say so in the plan line. With neither a pilot
+    # of either kind nor --sec_per_step, the error below still fires.
+    for arm in "${JEPA_RUNS[@]:1}"; do
+      if [[ "$run" == "$arm" ]]; then
+        base_pilot="$(pilot_id "$(base_id "${JEPA_RUNS[0]}")")"
+        base_measured="$(pilot_sec_per_step "$base_pilot")"
+        if [[ -n "$base_measured" ]]; then
+          measured="$base_measured"
+          pilot="$base_pilot"
+          source="pilot ${base_pilot}, ablation of ${JEPA_RUNS[0]%_dev}"
+        fi
+        break
+      fi
+    done
+  fi
   if [[ -n "$measured" ]]; then
     read -r field sec <<< "$measured"
   else

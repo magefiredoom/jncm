@@ -19,6 +19,14 @@ records carrying that suffix are used, so a dev pilot never sizes a lite run.
 Tokenizer run ids are never suffixed (T5.6): the dev and lite configs share one
 ``tok_vq_10k`` / ``tok_noisy_10k`` pair, so those rows keep their bare ids.
 
+A run whose results/<run>/DONE file exists (the shared tokenizers
+tok_vq_10k / tok_noisy_10k, or a finished full run) has nothing left to spend,
+so it is printed with DONE in the sec/step column and 0.00 hours, never
+MISSING: the total is the projection of what is still to run (T5.7 m5). The six
+G2 ablations never fly a pilot of their own; they are projected from the base
+pilot (pilot_jepa_base, config suffix applied), exactly as
+``scripts/launch_phase.sh`` sizes them.
+
 Usage:
     python scripts/budget.py
     python scripts/budget.py --results results
@@ -138,7 +146,18 @@ def main(argv: list[str] | None = None) -> int:
     measured: list[float] = []
     for phase, base_run, base_pilot, steps in RUNS:
         run_id = suffixed_run_id(base_run, suffix)
+        if (args.results / run_id / "DONE").is_file():
+            # T5.7 m5(a): a finished run has already spent its time; it adds
+            # 0.00 hours instead of being reported as MISSING.
+            totals.setdefault(phase, 0.0)
+            measured.append(0.0)
+            print(f"{phase:<5} {run_id:<27} {steps:>7} {'DONE':>10} {0.0:>7.2f}")
+            continue
         pilot_id = suffixed_run_id(base_pilot, suffix)
+        if phase == "G2" and base_run != "jepa_base_dev":
+            # T5.7 m5(b): ablations have no pilot of their own; the base
+            # pilot (same config suffix) is their measurement.
+            pilot_id = suffixed_run_id("pilot_jepa_base", suffix)
         sec = pilot_sec_per_step(args.results, pilot_id)
         if sec is None:
             print(f"{phase:<5} {run_id:<27} {steps:>7} {'MISSING':>10} {'n/a':>7}")

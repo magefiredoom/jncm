@@ -72,11 +72,16 @@ def _seed_pilot(
     (directory / "metrics.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# T5.7 m6: anything upstream of chain.sh that exports these four leaks into
+# every submitted job through --export=ALL, so tests must drop them here.
+LEAKED_VARS = ("SETS", "GEN_PPL", "N_SAMPLES", "N_SEEDS")
+
+
 def _clean_env() -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"SBATCH_ACCOUNT", "SETS"}
+        if key not in {"SBATCH_ACCOUNT", *LEAKED_VARS}
     }
     env["SBATCH_ACCOUNT"] = "def-test"
     return env
@@ -672,3 +677,112 @@ def test_joint_eval_jobs_carry_no_head(tmp_path: Path) -> None:
     g2 = _eval_lines(_run(root, ["g2", "pilot"]).stdout)
 
     assert g2 and all("HEAD=" not in line for line in g2)
+
+
+def test_full_g2_sizes_ablations_from_the_base_pilot(tmp_path: Path) -> None:
+    """T5.7 m4: an ablation without its own pilot is sized by pilot_jepa_base."""
+    root = _fixture_repo(tmp_path)
+    _seed_pilot(root, "pilot_jepa_base", 1.0)
+
+    result = _run(root, ["g2", "full", "--ablations"])
+
+    assert result.returncode == 0, result.stderr
+    jepa = [line for line in _sbatch_lines(result.stdout) if "jepa.sbatch" in line]
+    # chain.sh prints one sbatch line per chunk: 7 arms x 2 chunks -> count
+    # the distinct RUN_ID groups rather than the lines.
+    runs = sorted({re.search(r"RUN_ID=([^,]+)", line).group(1) for line in jepa})
+    assert len(runs) == 7
+    # 1000-step resume interval x 1.0 s = 1000 s; floor(9720 / 1000) = 9
+    # intervals per chunk -> ceil(10000 / 9000) = 2 chunks for every arm.
+    assert result.stderr.count("-> 2 chunk(s)") == 7
+    assert "-> 2 chunk(s) (pilot pilot_jepa_base)" in result.stderr
+    assert result.stderr.count("(pilot pilot_jepa_base, ablation of jepa_base)") == 6
+
+
+def test_full_g2_ablation_keeps_its_own_pilot_when_measured(tmp_path: Path) -> None:
+    """T5.7 m4: the fallback never overrides an ablation's own measurement."""
+    root = _fixture_repo(tmp_path)
+    _seed_pilot(root, "pilot_jepa_base", 5.0)
+    _seed_pilot(root, "pilot_jepa_no_vicreg", 1.0)
+
+    result = _run(root, ["g2", "full", "--ablations"])
+
+    assert result.returncode == 0, result.stderr
+    # The base pilot (5.0 s/step): one 1000-step interval of 5000 s fits, so
+    # 10 chunks; jepa_no_vicreg's own pilot (1.0 s/step) gives 2 chunks.
+    assert "-> 10 chunk(s) (pilot pilot_jepa_base)" in result.stderr
+    assert "-> 2 chunk(s) (pilot pilot_jepa_no_vicreg)" in result.stderr
+    assert result.stderr.count("(pilot pilot_jepa_base, ablation of jepa_base)") == 5
+    assert "run the pilot first" not in result.stderr
+
+
+def test_full_g2_ablation_errors_without_any_measurement(tmp_path: Path) -> None:
+    """T5.7 m4: the plain error still fires when no pilot and no --sec_per_step."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run(root, ["g2", "full", "--ablations"])
+
+    assert result.returncode == 1
+    assert "--sec_per_step" in result.stderr
+    assert not _sbatch_lines(result.stdout)
+
+
+def test_full_g2_lite_sizes_ablations_from_the_lite_base_pilot(tmp_path: Path) -> None:
+    """T5.7 m4: the ablation fallback carries the config suffix of the base."""
+    root = _fixture_repo(tmp_path)
+    _seed_pilot(root, "pilot_jepa_base_lite", 1.0)
+
+    result = _run(root, ["g2", "full", "--ablations", "--config=configs/jepa_lite.yaml"])
+
+    assert result.returncode == 0, result.stderr
+    jepa = [line for line in _sbatch_lines(result.stdout) if "jepa.sbatch" in line]
+    runs = sorted({re.search(r"RUN_ID=([^,]+)", line).group(1) for line in jepa})
+    assert len(runs) == 7
+    assert all(run.startswith("jepa_") and run.endswith("_lite") for run in runs)
+    assert "-> 2 chunk(s) (pilot pilot_jepa_base_lite)" in result.stderr
+    assert result.stderr.count("(pilot pilot_jepa_base_lite, ablation of jepa_base)") == 6
+    # The dev base pilot is never touched for the lite run.
+    assert not re.search(r"\(pilot pilot_jepa_base\)", result.stderr)
+
+
+@pytest.mark.parametrize("var", LEAKED_VARS)
+@pytest.mark.parametrize("value", ["1", ""])
+def test_a_leaked_env_var_stops_the_launch(
+    tmp_path: Path, var: str, value: str
+) -> None:
+    """T5.7 m6: --export=ALL would forward these to every job; refuse to run."""
+    root = _fixture_repo(tmp_path)
+    env = _clean_env()
+    env[var] = value
+
+    result = _run(root, ["g0", "pilot"], env)
+
+    assert result.returncode == 2
+    assert var in result.stderr
+    assert "--export" in result.stderr
+    assert not _sbatch_lines(result.stdout)
+
+
+def test_launch_works_when_none_of_the_leaked_vars_is_set(tmp_path: Path) -> None:
+    """T5.7 m6: a clean environment still plans the full g0 pilot."""
+    root = _fixture_repo(tmp_path)
+    env = _clean_env()
+    for var in LEAKED_VARS:
+        env.pop(var, None)
+
+    result = _run(root, ["g0", "pilot"], env)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_sbatch_lines(result.stdout)) == 3
+
+
+def test_the_g2_loop_still_exports_sets_internally(tmp_path: Path) -> None:
+    """T5.7 m6: the script's own `export SETS` in the G2 loop must keep working."""
+    root = _fixture_repo(tmp_path)
+    env = _clean_env()
+
+    result = _run(root, ["g2", "pilot", "--ablations"], env)
+
+    assert result.returncode == 0, result.stderr
+    assert 'SETS="jepa.vicreg=false"' in result.stdout
+    assert len([line for line in _sbatch_lines(result.stdout) if "jepa.sbatch" in line]) == 7
