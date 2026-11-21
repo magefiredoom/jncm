@@ -2,7 +2,7 @@
 # Launch one gate phase (T4.5): G0, G1 or G2, as a pilot or as the full run.
 #
 #   scripts/launch_phase.sh <g0|g1|g2> <pilot|full> [--submit]
-#       [--wall HH:MM:SS] [--sec_per_step X] [--ablations]
+#       [--wall=HH:MM:SS] [--sec_per_step=X] [--ablations]
 #       [--config PATH]
 #
 # Dry-run by default (prints every sbatch command, submits nothing).
@@ -139,7 +139,7 @@ JEPA_SETS=(
 
 usage() {
   echo "usage: scripts/launch_phase.sh <g0|g1|g2> <pilot|full> [--submit]" >&2
-  echo "       [--wall HH:MM:SS] [--sec_per_step X] [--ablations]" >&2
+  echo "       [--wall=HH:MM:SS] [--sec_per_step=X] [--ablations]" >&2
   echo "       [--config PATH]" >&2
 }
 

@@ -816,3 +816,12 @@ def test_a_zero_sec_per_step_in_a_pilot_record_is_rejected_clearly(tmp_path: Pat
     assert "pilot_gen_vq_ce" in result.stderr
     assert "awk" not in result.stderr
     assert not _sbatch_lines(result.stdout)
+
+
+def test_usage_documents_the_option_forms_the_parser_accepts() -> None:
+    """The usage once said `--wall HH:MM:SS` while only `--wall=HH:MM:SS` parses, so the
+    first attempt to give a pilot a longer wall (2026-11-20) died with 'unknown option'."""
+    text = Path(LAUNCH).read_text(encoding="utf-8")
+
+    assert "[--wall=HH:MM:SS] [--sec_per_step=X]" in text
+    assert "--wall HH:MM:SS" not in text
