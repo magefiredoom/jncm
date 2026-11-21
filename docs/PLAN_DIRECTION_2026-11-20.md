@@ -76,3 +76,11 @@ Packed step *estimates* until E2 measures them: vq + ce, flow and regress 2.2 to
 3. The remaining allocation (H100-h or RAP target). It decides how many ablations run (section 4).
 4. Direction 3: T4.9 (the merge job), or an rsync of `results/corr_p0*` for the sweep: only the eval shards are needed (the merge reads `eval/step_*.seed_*.json`, not the checkpoints, which are about 6 GB per run). From the local repo root, for each of `corr_p080`, `corr_p050`, `corr_p030`: `rsync -avhP --partial aefad@fir.alliancecan.ca:~/jncm_git/results/corr_p080/eval/ results/corr_p080/eval/` (MFA), in the form RUNBOOK section 0 uses. The agent then merges locally and reports. The merged files stay local unless they are copied back.
 5. Later: the flow fallback if G1 fails (direction 5), the ablation cut-off, the workshop (after the Nov 29 acceptances) and the title (after G2).
+
+## 7. Storage (added 2026-11-21, after the sweep failures)
+
+Both running sweep jobs died at 00:06 on a short `torch.save` write, most likely the `/home` quota (STATE, FIR jobs). `results/` sits in `~/jncm_git` on `/home`. A 10,000-step dev run writes about 9.4 GB, so the main study and the ablations need about 100 GB, and results so far are about 33 GB (*estimate*). Before step 5 of section 3:
+
+1. The researcher runs `diskusage_report` and moves `~/jncm_git/results` to `/project` (persistent; `/scratch` is purged after 60 days, before Feb 1), with a symlink left at `~/jncm_git/results`, while no jncm job runs or is about to start.
+2. Optional, to shrink the footprint: `latest.pt` and the periodic `step_*.pt` files serve only for resuming (milestones carry no Adam state). After `DONE`, the periodic files of a finished run could go; only the researcher deletes files. Milestones stay: the evals need them.
+3. `scripts/budget.py` gains a disk line (GB per run from the config) so a chain that will not fit is refused before submission (a candidate task, after the move).
