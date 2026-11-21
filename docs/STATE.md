@@ -78,7 +78,8 @@ Submitted while the E1 pilots were still queued (over an hour in `Priority`): th
 | --- | --- | --- | --- | --- | --- |
 | 4775911 | `corr_p080` | 2000 | 03:13:22 | `p_first` 0.8 (the default), `p_last` 0.2 | PENDING; FAILED 02:19:46 (short write of `latest.pt` at step 2000; `milestone_100.pt` complete) |
 | 4775912 | `corr_p080` eval | 64 x 3 | 00:20:00 | final milestone (`CKPT`), `--array=0-2` | PENDING (Dependency); `_0`, `_1` COMPLETED; `_2` CANCELLED by the system (01:50) |
-| 4893126 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | `--array=2`, same export as 4775912; submitted 2026-11-21 at `edd6a99` | PENDING |
+| 4893126 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | `--array=2`, same export as 4775912; submitted 2026-11-21 at `edd6a99` | FAILED 00:04:12: `FileNotFoundError: GPT-2 weights not found at models/gpt2-large` (agent error: the shell after the reconnect had no `GPT2_LARGE_PATH`, and `--export=ALL` carried none) |
+| 4924498 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | as 4893126, with `GPT2_LARGE_PATH=/home/aefad/jncm/models/gpt2-large` in `--export` (dry run checked) | PENDING |
 | 4775913 | `corr_p050` | 2000 | 03:13:22 | `p_first` 0.5 | PENDING; FAILED 02:16:57 (same; `milestone_100.pt` complete) |
 | 4775914 | `corr_p050` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency); `_0..2` COMPLETED |
 | 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING; held and released 2026-11-21 around the move |
