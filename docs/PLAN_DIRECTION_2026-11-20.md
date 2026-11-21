@@ -84,3 +84,13 @@ Both running sweep jobs died at 00:06 on a short `torch.save` write: the `/home`
 1. The researcher, while no jncm job runs or is about to start: `scontrol hold` the pending jncm jobs, `mkdir -p /scratch/aefad/jncm`, `mv /home/aefad/jncm/results /scratch/aefad/jncm/results`, `ln -s /scratch/aefad/jncm/results /home/aefad/jncm/results`, `scontrol release`. `/scratch` has 19 TiB; no `/project` is listed. Scratch is purged after about 60 days (check Fir's policy), so the small records (`metrics.jsonl`, `eval/`, `config.yaml`, `git_sha.txt`, `DONE`) are copied to the local repo with each results rsync.
 2. Optional, to shrink the footprint: `latest.pt` and the periodic `step_*.pt` files serve only for resuming (milestones carry no Adam state). After `DONE`, the periodic files of a finished run could go; only the researcher deletes files. Milestones stay: the evals need them.
 3. `scripts/budget.py` gains a disk line (GB per run from the config) so a chain that will not fit is refused before submission (a candidate task, after the move).
+
+## 8. Proposed SPEC v1.7 text (drafted 2026-11-21 for the researcher; not applied)
+
+The researcher asked to "keep planning our next specs & tasks". SPEC stays untouched until the researcher approves these items; each is short and can be accepted alone.
+
+1. **Section 7, storage (new bullet).** "Run outputs live on the cluster's scratch filesystem: `results` resolves there through a symlink, and a submission refuses a results root under `/home` (T4.10). After a run ends, its small records (`config.yaml`, `git_sha.txt`, `metrics.jsonl`, `DONE`, `eval/`, `samples/`) are copied to the local repository (T4.11); checkpoints that later runs depend on (the staged tokenizers) also have a second copy outside scratch (T4.12)."
+2. **Section 6.1, merging (new sentence).** "Per-seed eval shards are merged by a CPU job chained `afterok` on the eval array (T4.9); no Python runs on a login node."
+3. **Section 10.2 and 10.3, when a run counts as trained (clarification).** "A run counts as trained once its final milestone exists at the expected size; `DONE` is needed for chaining, resume bookkeeping and pilots. A sweep arm whose final resume save failed after that milestone is evaluated as normal, and the failure is recorded." (This covers `corr_p080` and `corr_p050`.)
+4. **Section 10.3, a lost eval task (new sentence).** "An eval task cancelled by the system is rerun alone with the same seed (`--array=<i>`); the other seeds are kept."
+5. **Section 10.4, submission order (new sentence).** "G0, G1 (flow and regress) and G2 base are submitted together once the packed re-pilot (10.2) has passed and 10.3 has fixed `p_first`; if the queue stalls, the order of priority is G0, G1 flow, G2, G1 regress."
