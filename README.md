@@ -49,4 +49,4 @@ Cluster runs are launched with `scripts/launch_phase.sh`; [`RUNBOOK.md`](RUNBOOK
 
 ## Contact
 
-Questions or ideas: mfd.aefadfecx@gmail.com
+Questions or ideas: open an issue on the repository.

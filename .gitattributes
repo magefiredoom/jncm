@@ -1,0 +1,5 @@
+# Shell scripts run under sh/bash; CRLF line endings break them (core.autocrlf is on for Windows checkouts).
+*.sh text eol=lf
+*.sbatch text eol=lf
+scripts/hooks/* text eol=lf
+site.env.example text eol=lf

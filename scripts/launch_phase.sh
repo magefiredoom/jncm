@@ -196,7 +196,7 @@ if [[ -n "$CLI_SEC" ]] && ! awk -v s="$CLI_SEC" 'BEGIN { exit !(s > 0) }'; then
   die "--sec_per_step must be a positive number, got '$CLI_SEC'"
 fi
 if [[ -z "${SBATCH_ACCOUNT:-}" ]]; then
-  die "SBATCH_ACCOUNT is unset; export SBATCH_ACCOUNT=<allocation> first (never guessed, SPEC 7)"
+  die "SBATCH_ACCOUNT is unset; run 'source site.env' first (copy site.env.example; never guessed, SPEC 7)"
 fi
 
 # T5.5c: a non-dev CONFIG gives every run id the config stem as a suffix.

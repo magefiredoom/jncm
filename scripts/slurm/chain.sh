@@ -86,7 +86,7 @@ if [[ ! "$wall" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]]; then
   die "--wall must be HH:MM:SS, got '$wall'"
 fi
 if [[ -z "${SBATCH_ACCOUNT:-}" ]]; then
-  die "SBATCH_ACCOUNT is unset; export SBATCH_ACCOUNT=<allocation> first (never guessed, SPEC 7)"
+  die "SBATCH_ACCOUNT is unset; run 'source site.env' first (copy site.env.example; never guessed, SPEC 7)"
 fi
 
 base_args=(sbatch "--account=${SBATCH_ACCOUNT}" "--gres=${gres}" "--time=${wall}")

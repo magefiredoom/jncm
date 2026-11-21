@@ -22,6 +22,7 @@ Research codebase: continuous (and JEPA-style) versions of NCM (Next-Concept Mod
 - Never run training, pytest or heavy Python on a login node (one 5-step smoke run is fine).
 - MFA steps (scp, rsync, new ssh logins) are done by the human. If a step needs MFA, give the exact command and stop.
 - Account and partition come from `SBATCH_ACCOUNT` / `SBATCH_PARTITION`; never write them into files.
+- Never write the FIR username, allocation account or home path into tracked files; use $FIR_USER, $SBATCH_ACCOUNT, ~ and $USER. This includes command output copied into `docs/STATE.md` (prompts, `ls -l` owners, `sacct` accounts, `diskusage_report` lines): redact it before writing. The real values live only in the git-ignored `site.env` (template `site.env.example`); `scripts/hooks/pre-commit` rejects staged changes that contain them (install it as RUNBOOK.md says).
 - After every `sbatch` or `scancel`, record job id, run id, STEPS and time limit under "FIR jobs" in `docs/STATE.md`.
 - Never reuse a run id that already has `results/<id>/ckpt/latest.pt` unless resuming on purpose.
 - Submit only the jobs the researcher asked for; allocation is limited and fair-share is already over-used.

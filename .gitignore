@@ -28,3 +28,5 @@ dist/
 
 # Archives (do not commit uploaded bundles)
 *.zip
+# Site settings with the real cluster username and allocation (template: site.env.example)
+site.env

@@ -1,0 +1,46 @@
+#!/bin/sh
+# Reject a commit whose staged additions contain the cluster username or allocation account.
+# CLAUDE.md: tracked files use $FIR_USER, $SBATCH_ACCOUNT, ~ and $USER instead.
+#
+# Install (once per clone, from the repo root):
+#   cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+#
+# The fixed patterns are bracket expressions, so this file never contains the strings it rejects.
+# The FIR_USER and SBATCH_ACCOUNT values of an untracked site.env are rejected as well.
+# The hook fails closed: if a grep errors out (exit status above 1), the commit is refused.
+
+fail() {
+  echo "pre-commit: $1" >&2
+  exit 1
+}
+
+added=$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++ ')
+names=$(git diff --cached --name-only --diff-filter=ACMR)
+# Lower-case once; `grep -i -F` aborts in some Git-for-Windows builds (GNU grep 3.0).
+text=$(printf '%s\n%s\n' "$added" "$names" | tr '[:upper:]' '[:lower:]')
+
+found=$(printf '%s\n' "$text" | grep -E 'a[e]fad|def-[c]heng')
+[ $? -gt 1 ] && fail "grep failed; refusing the commit"
+
+if [ -f site.env ]; then
+  for var in FIR_USER SBATCH_ACCOUNT; do
+    val=$(sed -n "s/^export $var=//p" site.env | head -n 1 | tr -d "\"' " | tr '[:upper:]' '[:lower:]')
+    case "$val" in
+      '' | '<'*) continue ;;
+    esac
+    hit=$(printf '%s\n' "$text" | grep -F -e "$val")
+    [ $? -gt 1 ] && fail "grep failed; refusing the commit"
+    if [ -n "$hit" ]; then
+      found="$found
+$hit"
+    fi
+  done
+fi
+
+if [ -n "$(printf '%s' "$found" | tr -d '[:space:]')" ]; then
+  echo "pre-commit: the staged changes contain the cluster username or allocation account:" >&2
+  printf '%s\n' "$found" | grep -v '^$' | head -n 10 >&2
+  echo "Write \$FIR_USER, \$SBATCH_ACCOUNT, ~ or \$USER instead (CLAUDE.md)." >&2
+  exit 1
+fi
+exit 0

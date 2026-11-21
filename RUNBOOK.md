@@ -6,10 +6,10 @@ blank.
 
 Fixed facts (from docs/STATE.md; do not re-derive):
 
-- Host `aefad@fir.alliancecan.ca`, login1/login2, repo `~/jncm`, venv `.venv`
-  (built with `module load python/3.12`).
-- Slurm account `$SBATCH_ACCOUNT` (`def-cheng23`; GPU jobs record
-  `def-cheng23_gpu`). No `--partition`: FIR places H100 jobs on `gpubase_b`.
+- Host `fir`: an SSH alias for `fir.alliancecan.ca` (set it up as below), login1/login2,
+  repo `~/jncm`, venv `.venv` (built with `module load python/3.12`).
+- Slurm account `$SBATCH_ACCOUNT`, set in `site.env` (GPU jobs record it as
+  `${SBATCH_ACCOUNT}_gpu`). No `--partition`: FIR places H100 jobs on `gpubase_b`.
 - GPU request `--gres=gpu:h100:1` (FIR rejects a plain `--gres=gpu:1`).
 - Compute nodes are offline; `tok/gen/eval` set the `HF_*_OFFLINE` variables.
 - Run every block from `~/jncm` unless the block starts with `cd` somewhere.
@@ -18,7 +18,27 @@ At the top of each FIR shell:
 
 ```bash
 cd ~/jncm
-export SBATCH_ACCOUNT=def-cheng23     # only if your shell does not set it already
+source site.env     # FIR_USER, SBATCH_ACCOUNT, GPT2_LARGE_PATH (copy site.env.example once)
+```
+
+**Site settings and privacy.** The real cluster username and allocation live only in
+`site.env`, which is git-ignored; `site.env.example` is the committed template
+(`cp site.env.example site.env`, then fill in `<your-username>` and `<your-allocation>`).
+Source it first in every cluster shell, and locally before an `rsync` or `scp`.
+Tracked files use `$FIR_USER`, `$SBATCH_ACCOUNT`, `~` and `$USER` (CLAUDE.md). Install the
+hook that enforces this once per clone:
+
+```bash
+cp scripts/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
+
+**SSH alias.** Every `ssh`, `rsync` and `scp` below uses the host `fir`. Put this in
+`~/.ssh/config` on your own machine:
+
+```
+Host fir
+    HostName fir.alliancecan.ca
+    User <your-username>
 ```
 
 ## 0. Pilots first — go/no-go before any full run
@@ -274,8 +294,8 @@ If `~/jncm` is already a checkout, skip the clone and only run the
 
 ```bash
 # local, repo root
-rsync -avhP --partial data/tinystories/ aefad@fir.alliancecan.ca:~/jncm/data/tinystories/
-rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/gpt2-large/
+rsync -avhP --partial data/tinystories/ fir:~/jncm/data/tinystories/
+rsync -avhP --partial models/gpt2-large/ fir:~/jncm/models/gpt2-large/
 ```
 
 `scp` equivalent:
@@ -283,8 +303,8 @@ rsync -avhP --partial models/gpt2-large/ aefad@fir.alliancecan.ca:~/jncm/models/
 ```bash
 scp data/tinystories/train.bin data/tinystories/val.bin \
     data/tinystories/meta.json data/tinystories/tokenizer.json \
-    aefad@fir.alliancecan.ca:~/jncm/data/tinystories/
-scp -r models/gpt2-large aefad@fir.alliancecan.ca:~/jncm/models/
+    fir:~/jncm/data/tinystories/
+scp -r models/gpt2-large fir:~/jncm/models/
 ```
 
 Verify the copy (expect `933740544`, `9384448`, and the meta below; the GPT-2
@@ -292,7 +312,7 @@ directory must contain `config.json`, `pytorch_model.bin`, `tokenizer.json`,
 `vocab.json`, `merges.txt`):
 
 ```bash
-ssh aefad@fir.alliancecan.ca 'cd ~/jncm && wc -c data/tinystories/train.bin data/tinystories/val.bin && cat data/tinystories/meta.json && ls models/gpt2-large'
+ssh fir 'cd ~/jncm && wc -c data/tinystories/train.bin data/tinystories/val.bin && cat data/tinystories/meta.json && ls models/gpt2-large'
 ```
 
 Expected meta: `train_windows 3647424`, `val_windows 36658`, `L 128`, `V 8192`.
