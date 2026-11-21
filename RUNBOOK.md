@@ -210,10 +210,13 @@ scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 --wall=<WALL_CLOCK> --submit \
 ```
 
 `p_last` stays 0.2. Without `--submit` each command is a dry run. Evaluate the
-final checkpoint of each run with 64 samples and one seed
-(`N_SAMPLES=64,N_SEEDS=1,HEAD=ce` in `--export` of `eval.sbatch`) and report Gen
-PPL, H, `pairwise_agree` and the final training loss in one table; the
-researcher picks `p_first`.
+final checkpoint of each run with 64 samples and three seeds
+(`--array=0-2` and `N_SAMPLES=64,N_SEEDS=3,HEAD=ce` in `--export` of
+`eval.sbatch`; it evaluates all ten milestones, which is cheap at 64 samples,
+and the table uses the final one), merge with `python scripts/run_eval.py --run_id <run> --merge`, and report Gen
+PPL mean and std, H, `pairwise_agree` and the final training loss in one table.
+`p_first` follows the selection rule of SPEC 10.3 (v1.6); the chosen value goes
+into the dev configs in its own commit.
 
 ## 1. Syncing FIR
 
