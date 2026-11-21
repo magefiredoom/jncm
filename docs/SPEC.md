@@ -1,4 +1,4 @@
-# SPEC — jncm (v1.5, 2026-11-09)
+# SPEC — jncm (v1.6, 2026-11-20)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
 
@@ -11,6 +11,8 @@ Source of truth for all implementation work. Items tagged **[DECISION]** are des
 **v1.4 changes:** JEPA targets are teacher-forced on the online chain by default (8, step 2) with the old definition kept as `target_chain: ema_clean`; joint-run position accounting defined (6.2).
 
 **v1.5 changes** (from docs/REVIEW_M3-M5.md): the generator's input embedding is trained in staged and joint runs alike (5.1); gradient accumulation and per-arm parameter counts (5.7); denser milestones, optimizer-free milestone files (6.2).
+
+**v1.6 changes** (2026-11-20; drafted by the agent at the researcher's explicit request after the first runs on the cluster, for the researcher to review): the backbone packs complementary levels instead of padding every level to L (5.2); all long runs use the dev size (5.7); the GPT-2 scorer's implementation and the cluster rule against importing `transformers` (6.1); the JEPA warm start is charged to the joint run (6.2, 8; QUESTIONS Q14); cluster runtime requirements (7); the experiment protocol: pilots, the corruption sweep and its selection rule, full runs, gates, ablation order, seeds (10, new).
 
 ## 1. Purpose and scope
 
@@ -149,7 +151,7 @@ Level k must depend only on levels < k. This is the most likely place for a bug 
 
 ### 5.2 Backbone
 
-Pre-LN transformer: 12 layers, H = 768, 12 heads, MLP 4H with GELU, dropout 0.1, bidirectional attention **within a level only** (block diagonal across levels). Implementation: pad each level to length L, run on [B*K, L, H] with a key-padding mask (use `scaled_dot_product_attention`), then gather valid positions. Training processes all K levels in one forward pass. Sampling processes one level per forward pass. Conditional generation (M6) prepends a prefix of P tokens to every level block (prefix attends to itself only; level tokens attend to prefix and own level).
+Pre-LN transformer: 12 layers, H = 768, 12 heads, MLP 4H with GELU, dropout 0.1, bidirectional attention **within a level only** (block diagonal across levels). Implementation (v1.6, TASKS T4.7): training packs level k with level K+1-k into one sequence of l_k + l_{K+1-k} positions (129 for every pair when L = 128, K = 12) with a two-block attention mask (`scaled_dot_product_attention`), so attention stays within a level and no position is padding; a level without a partner (odd K) runs alone, and sequences shorter than the longest are padded with a key-padding mask. The packed layout computes the same function as padding every level to L (test: equal to 1e-5 in fp32 with dropout off; dropout masks differ between layouts). Until v1.6 every level was padded to L ([B*K, L, H]), which spent about half of the backbone FLOPs on padding (774 of 1536 slots are real at the dev size; docs/PLAN_2026-11-20.md). Training processes all K levels in one forward pass. Sampling processes one level per forward pass. Conditional generation (M6) prepends a prefix of P tokens to every level block (prefix attends to itself only; level tokens attend to prefix and own level).
 
 ### 5.3 Heads (config `head`)
 
@@ -186,7 +188,7 @@ Exactly K backbone forward passes per batch (unit test counts them with a forwar
 
 ### 5.7 Defaults (dev)
 
-AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, clip 1.0, bf16, batch 1024, 10k steps (the budget NCM used for its TinyStories ablations, about 1.3B positions), generator about 90M parameters (85M backbone plus the head: ce adds about 38M, flow about 15M, regress under 1M; log and report parameter counts per arm). The optimizer batch `batch_size` may be processed as `generator.train.grad_accum` equal micro-batches (losses averaged, position accounting counts the full batch; VICReg statistics are per micro-batch). This is required when the packed K-level batch does not fit: batch 1024 is about 1.6M padded tokens per step.
+AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, clip 1.0, bf16, batch 1024, 10k steps (the budget NCM used for its TinyStories ablations, about 1.3B positions), generator about 90M parameters (85M backbone plus the head: ce adds about 38M, flow about 15M, regress under 1M; log and report parameter counts per arm). The optimizer batch `batch_size` may be processed as `generator.train.grad_accum` equal micro-batches (losses averaged, position accounting counts the full batch; VICReg statistics are per micro-batch). This is required when the K-level batch does not fit: batch 1024 is about 0.79M packed positions per step (1.57M with every level padded to L). **Size decision (researcher, 2026-11-20):** every long run (the corruption sweep and all full runs, section 10) uses this dev configuration; `configs/*_lite.yaml` stays available for short checks only.
 
 ## 6. Evaluation (`jncm/eval/`, `scripts/`)
 
@@ -196,11 +198,12 @@ AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, 
 - Decode ids to text with the dataset tokenizer, re-tokenize with the GPT-2 tokenizer, score with GPT-2-large loaded from a local path (`$GPT2_LARGE_PATH`, offline). Gen PPL = exp(mean token NLL over all scored tokens). Score the full re-tokenized sample (no truncation). Report mean and std over seeds.
 - H = mean over samples of the entropy (nats) of the empirical unigram distribution of that sample's tokens. Compute it on GPT-2 tokens; also compute it on the dataset's own tokens and record which one matches the real-data reference.
 - Diversity, reported with every Gen PPL (perplexity and per-sample entropy cannot reveal that all samples are alike): `unique_frac` = distinct decoded samples / n_samples (catches exact duplicates only; channel noise can keep it near 1 for a collapsed model); `pairwise_agree` = mean fraction of identical token positions over 1,000 random pairs of distinct samples, on dataset tokens (catches near-duplicates; about 1 means collapsed).
+- Scorer implementation (v1.6): GPT-2-large (the released weights and BPE tokenizer) runs through `jncm/eval/gpt2_lean.py`, a PyTorch forward pass with the `tokenizers` BPE and its own safetensors reader. It must agree with the Hugging Face implementation (`tests/test_gpt2_lean.py`: logits within 1e-4 on a random model and 5e-3 on gpt2-large, identical token ids) and reproduce the protocol-gate row of our pipeline (10.80 / 4.03, recorded 2026-11-06 and reproduced 2026-11-20 to 4e-8 in perplexity). Code that runs on the cluster must not import `transformers`: its import reads every module file of the package and took 7 to 15 minutes from the cluster filesystem. Model comparisons are reported as ratios to our own data row (10.80 / 4.03), not to the 9.67 / 3.96 above.
 - **Protocol gate (T1.2):** the same pipeline applied to real validation sequences must give about 9.67 PPL and about 3.96 H (tolerance 15% and 0.15). If not, debug the protocol before any model comparison. Do not adjust the metric to hit the numbers; write the diagnosis in docs/QUESTIONS.md.
 
 ### 6.2 Token accounting (for the sample-efficiency claim)
 
-Every metrics record carries `tok_positions` (tokenizer steps x batch x L), `gen_positions` (generator steps x batch x L) and `total_positions` (sum). For comparisons, curves are plotted against `total_positions`, with the tokenizer budget added as an offset for generator curves. Both discrete and continuous runs use identical accounting. Joint (JEPA) runs train tokenizer and generator in one loop, so each sample is seen once by both objectives: record `joint_positions` = steps x B x L, `total_positions = joint_positions`, and `total_positions_conservative = 2 x joint_positions` (the count comparable to staged runs if both objectives are charged); plot both. Every run saves milestone checkpoints at 10%, 20%, ..., 100% of training (so equal-position comparisons have enough points); milestone files omit optimizer state.
+Every metrics record carries `tok_positions` (tokenizer steps x batch x L), `gen_positions` (generator steps x batch x L) and `total_positions` (sum). For comparisons, curves are plotted against `total_positions`, with the tokenizer budget added as an offset for generator curves. Both discrete and continuous runs use identical accounting. Joint (JEPA) runs warm-start E and D from the finished staged noisy tokenizer and then train E, D and G in one loop, so each joint sample is seen once by both objectives: record `joint_positions` = steps x B x L and `tok_offset` = the staged tokenizer's `tok_positions` (655,360,000 for `tok_noisy_10k`), and set `total_positions = tok_offset + joint_positions` and `total_positions_conservative = tok_offset + 2 x joint_positions` (the count comparable to staged runs if both objectives are charged); plot both. Every run saves milestone checkpoints at 10%, 20%, ..., 100% of training (so equal-position comparisons have enough points); milestone files omit optimizer state.
 
 ### 6.3 Samples
 
@@ -212,11 +215,12 @@ Each evaluation writes 32 decoded samples to `results/<run_id>/samples/step_<n>.
 - `results/<run_id>/` contains `config.yaml`, `git_sha.txt`, `metrics.jsonl` (one JSON object per eval or log step), `ckpt/`, `samples/`.
 - Seed everything (python, numpy, torch, DataLoader generators). Checkpoints are resumable.
 - No wandb. Logging is JSONL plus `scripts/plot_curves.py`.
+- Cluster runtime (v1.6, learned from the first runs on the cluster): a GPU job stops instead of falling back to the CPU (`JNCM_REQUIRE_CUDA=1` in every GPU template, `jncm.utils.resolve_device`); every Slurm template that starts a torch process declares `--cpus-per-task` and `--mem` (the cluster default is 1 CPU and 256 MB); scripts under `scripts/` run without an editable install of `jncm`; a resumed run restores the data stream and every RNG state, and a checkpoint without that state is refused.
 - Slurm scripts never contain an account, partition or GPU type that was guessed. `#SBATCH` lines cannot expand variables, so the account and partition come from the environment (`SBATCH_ACCOUNT`, `SBATCH_PARTITION`) or the `sbatch` command line.
 
 ## 8. JEPA joint mode (Phase 2) **[DECISION]**: the researcher will revise this after Phase-1 results
 
-Requires `quantizer: noisy`. Modules: online encoder E (the tokenizer encode path), EMA encoder E-bar (deep copy; requires_grad False; eval mode; channel noise off), decoder D, generator G.
+Requires `quantizer: noisy`. E and D are initialized from the staged noisy tokenizer checkpoint; the generator and head are trained from scratch; the tokenizer's training positions are charged to the joint run (6.2). Modules: online encoder E (the tokenizer encode path), EMA encoder E-bar (deep copy; requires_grad False; eval mode; channel noise off), decoder D, generator G.
 
 Per training step on batch x:
 
@@ -236,3 +240,52 @@ Diagnostics (log per level): min and mean std of c_k and t_k; effective rank; ex
 ## 9. Smoke configuration (`configs/smoke.yaml`)
 
 L = 32, V = 64, K = 4 (l = [1, 11, 22, 32]), d = 64, d_code = 16, V_k = 64, d_k = 8, sigma = 0.4, generator H = 128 with 2 layers and 4 heads, batch 16. Every unit test runs on CPU with this config in under 60 seconds.
+
+## 10. Experiment protocol (v1.6) **[DECISION]** (drafted by the agent at the researcher's request, 2026-11-20; the researcher may revise any item)
+
+### 10.1 Runs and sizes
+
+- Tokenizers: `tok_vq_10k` and `tok_noisy_10k` (10,000 steps at batch 512, 655,360,000 positions each; gate G0a passed). They are reused by every run and retrained only if section 4 changes; a retrain first needs the tokenizer trainer's resume state (TASKS E8).
+- Generators and JEPA: dev configuration (5.7), 10,000 steps at batch 1024, milestones every 10% (6.2). One training seed per run (seed 42).
+- Long runs are chained chunks of at most the wall the launch kit plans (whole resume intervals). The first resume of every run is checked: the first metrics record after the resume continues the loss of the record before it (no jump back to the initial loss), and the step and position counters continue.
+
+### 10.2 Pilots
+
+Every arm is piloted on the code its long run will use before that long run is submitted: generators 300 steps, JEPA 200 steps, evaluated with 32 samples and one seed. A pilot passes when training ends `COMPLETED` inside its wall, writes `DONE` and a metrics record with `train_sec_per_step`, and its eval writes `eval/step_*.json` with a finite Gen PPL for every milestone. A change to the training step (for example TASKS T4.7) keeps a pilot's correctness result but voids its timing; one vq + ce re-pilot then re-measures the step, and the other arms are scaled by their FLOP ratio (docs/PLAN_2026-11-20.md).
+
+### 10.3 Corruption sweep (F16) and its selection rule
+
+- Three vq + ce runs of 2,000 steps, `corrupt.mode: swap`, `p_last = 0.2`, `p_first` in {0.8, 0.5, 0.3}; run ids `corr_p080`, `corr_p050`, `corr_p030`.
+- Each run's final milestone is evaluated with 64 samples and 3 seeds.
+- Selection: among the settings whose H is within 0.15 of the data row (4.03) and whose `pairwise_agree` is below 0.5, take the one with the lowest final Gen PPL; if it does not beat the default (`p_first = 0.8`) by more than twice the larger seed standard deviation of the two, keep 0.8. If no setting qualifies, keep 0.8 and record that in docs/QUESTIONS.md.
+- The chosen `p_first` applies to every full run (ce, flow, regress and JEPA). The `noise` mode is not swept.
+
+### 10.4 Full runs
+
+- Phase 1: G0 = vq + ce; G1 = noisy + flow and noisy + regress.
+- Phase 2: G2 = JEPA base (`head: flow`, `target_chain: online`, `ema`, `vicreg` and `decoder_through_E` on).
+- Evaluation: every milestone with 256 samples x 5 seeds (6.1). The final milestone is evaluated again with 1024 samples x 5 seeds, and Table 1 uses those numbers.
+- Gate verdicts come from `scripts/gate_report.py` on the merged eval records.
+
+### 10.5 Gates
+
+- G0: final Gen PPL <= 20 and H >= 3.8.
+- G1: noisy + flow within 15% of the G0 Gen PPL at equal `total_positions` (linear interpolation inside the observed range only, else "not comparable"), and H within 0.15 of the data row. noisy + regress is reported, flagged when `pairwise_agree` > 0.5.
+- G2: JEPA base matches or beats the best Phase-1 arm at equal `total_positions`, judged under both accountings (6.2); each verdict names its accounting. If G2 fails, the paper reports JEPA as a negative result; the schedule does not change.
+
+### 10.6 Ablations (Phase 2), in priority order
+
+Each is a full 10,000-step dev run with the same evaluation as 10.4. They are submitted in this order until the budget is spent, and the paper reports what ran.
+
+1. `decoder_through_E: false`
+2. `vicreg: false`
+3. both off (completes the planned 2x2 of section 8)
+4. `ema: false`
+5. `target_chain: ema_clean`
+6. `head: regress`
+
+A from-scratch JEPA run (no warm start, Q14) comes only after all six.
+
+### 10.7 Seeds and variance
+
+The reported standard deviation is over sampling seeds; training variance is not measured unless budget remains after 10.6. In that case a second training seed (seed 43) goes first to G0 and then to the G1 arm closest to G0.
