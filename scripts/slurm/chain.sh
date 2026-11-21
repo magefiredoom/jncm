@@ -2,7 +2,7 @@
 # Chain several copies of one Slurm template (T4.5).
 #
 #   scripts/slurm/chain.sh <script> <n_chunks> [--export=ALL,K=V,...]
-#       [--wall HH:MM:SS] [--gres=gpu:h100:1] [--array=A-B]
+#       [--wall=HH:MM:SS] [--gres=gpu:h100:1] [--array=A-B]
 #       [--dependency=<slurm spec>] [--submit]
 #
 # Dry-run by default: it prints the sbatch commands and submits nothing. With
@@ -29,7 +29,7 @@ set -euo pipefail
 
 usage() {
   echo 'usage: scripts/slurm/chain.sh <script> <n_chunks> [--export=ALL,K=V,...]' >&2
-  echo '       [--wall HH:MM:SS] [--gres=gpu:h100:1] [--array=A-B]' >&2
+  echo '       [--wall=HH:MM:SS] [--gres=gpu:h100:1] [--array=A-B]' >&2
   echo '       [--dependency=<slurm spec>] [--submit]' >&2
 }
 

@@ -214,3 +214,11 @@ def test_sets_travels_inside_the_export_list_for_the_f16_sweep() -> None:
     assert result.returncode == 0, result.stderr
     commands = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
     assert len(commands) == 1 and export in commands[0]
+
+
+def test_usage_documents_the_wall_form_the_parser_accepts() -> None:
+    """Only `--wall=HH:MM:SS` parses (as in launch_phase.sh); the usage said otherwise."""
+    text = Path("scripts/slurm/chain.sh").read_text(encoding="utf-8")
+
+    assert text.count("[--wall=HH:MM:SS]") == 2
+    assert "--wall HH:MM:SS" not in text
