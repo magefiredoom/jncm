@@ -494,3 +494,54 @@ def test_flow_checkpoint_needs_the_head_flag_under_the_dev_config(tmp_path: Path
 
     assert resolved.generator.head == "flow"
     assert resolved.tokenizer.quantizer == "noisy"
+
+
+def _tiny_gpt2_dir(tmp_path: Path) -> Path:
+    """A random one-layer GPT-2 with the real tokenizer.json, in the real file layout."""
+    import shutil
+
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    real_tokenizer = Path("models/gpt2-large/tokenizer.json")
+    if not real_tokenizer.exists():
+        pytest.skip("needs models/gpt2-large/tokenizer.json")
+    path = tmp_path / "tiny_gpt2"
+    torch.manual_seed(0)
+    config = GPT2Config(vocab_size=50257, n_positions=128, n_embd=16, n_layer=1, n_head=2)
+    GPT2LMHeadModel(config).eval().save_pretrained(path, safe_serialization=True)
+    shutil.copy(real_tokenizer, path / "tokenizer.json")
+    return path
+
+
+def test_run_eval_works_with_the_real_scorer_and_its_tokenizer(tmp_path: Path) -> None:
+    """The fakes above hid it: on FIR (canary 3, 2026-11-20) every eval died with
+    `'LeanGPT2Tokenizer' object has no attribute 'encode'`, because run_eval calls
+    `gpt2_tokenizer.encode(text)` on `scorer.tokenizer`. This runs the same path with
+    the real GPT2Scorer over a tiny model."""
+    from jncm.eval.genppl import GPT2Scorer
+
+    cfg = _smoke_cfg()
+    tok_ckpt = _save_tokenizer_ckpt(tmp_path, cfg)
+    results = tmp_path / "results"
+    _save_generator_ckpt(
+        results / "run_a" / "ckpt" / "milestone_100.pt", cfg, tok_ckpt, step=9, fraction=1.0
+    )
+    scorer = GPT2Scorer(model_path=_tiny_gpt2_dir(tmp_path), device="cpu")
+
+    written = run_eval(
+        cfg,
+        run_id="run_a",
+        tokenizer_ckpt=tok_ckpt,
+        results_dir=results,
+        n_samples=2,
+        n_seeds=1,
+        decode_fn=_decode_fn,
+        scorer=scorer,
+        gpt2_tokenizer=scorer.tokenizer,
+        device=torch.device("cpu"),
+    )
+
+    aggregate = next(path for path in written if ".seed_" not in path.name)
+    record = json.loads(aggregate.read_text(encoding="utf-8"))
+    assert math.isfinite(record["ppl_mean"]) and record["ppl_mean"] > 1.0
+    assert record["h_gpt2_mean"] > 0.0

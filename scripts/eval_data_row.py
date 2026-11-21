@@ -109,9 +109,8 @@ def main() -> None:
     args = parser.parse_args()
 
     scorer = GPT2Scorer(model_path=args.gpt2, device=args.device)
-    from transformers import AutoTokenizer
-
-    gpt2_tokenizer = AutoTokenizer.from_pretrained(str(args.gpt2), local_files_only=True)
+    # The scorer's own tokenizer: no `transformers` import (jncm/eval/gpt2_lean.py).
+    gpt2_tokenizer = scorer.tokenizer
 
     print(f"Running Protocol Gate on {args.data} with {args.n_samples} samples across {args.n_seeds} seeds...")
     results = eval_real_data(

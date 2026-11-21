@@ -193,3 +193,17 @@ def test_the_scorer_never_imports_transformers(tiny_dir: Path, tmp_path: Path) -
     report = json.loads(result.stdout.strip().splitlines()[-1])
     assert report == {"tokens": report["tokens"], "finite": True, "transformers": False}
     assert report["tokens"] > 0
+
+
+@needs_real_weights
+def test_encode_is_what_run_eval_and_eval_data_row_call() -> None:
+    """`scripts/run_eval.py` and `scripts/eval_data_row.py` call `.encode(text)` on the
+    scorer's tokenizer; it was missing on FIR (canary 3, 2026-11-20)."""
+    from transformers import AutoTokenizer
+
+    reference = AutoTokenizer.from_pretrained(str(REAL_GPT2), local_files_only=True)
+    lean = LeanGPT2Tokenizer(REAL_GPT2)
+
+    for text in ["", "Once upon a time.", "a  b\nc", "café 日本語"]:
+        assert lean.encode(text) == reference.encode(text), repr(text)
+        assert lean.encode(text) == lean(text)["input_ids"]

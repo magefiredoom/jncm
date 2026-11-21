@@ -201,9 +201,11 @@ def load_gpt2(path: str | Path, device: str | torch.device = "cpu") -> LeanGPT2:
 class LeanGPT2Tokenizer:
     """The GPT-2 BPE tokenizer from ``tokenizer.json``, via the ``tokenizers`` library.
 
-    Mimics the part of the Hugging Face tokenizer interface the scorer uses: calling it
+    Mimics the part of the Hugging Face tokenizer interface the code uses: calling it
     returns ``{"input_ids": ...}`` (a list, or a ``[1, T]`` long tensor with
-    ``return_tensors="pt"``), and ``eos_token_id`` / ``pad_token_id`` exist.
+    ``return_tensors="pt"``), ``encode(text)`` returns the id list (``scripts/run_eval.py``
+    and ``scripts/eval_data_row.py`` call it on ``scorer.tokenizer``), and
+    ``eos_token_id`` / ``pad_token_id`` exist.
     """
 
     def __init__(self, path: str | Path, eos_token_id: int = 50256) -> None:
@@ -213,8 +215,12 @@ class LeanGPT2Tokenizer:
         self.eos_token_id = int(eos_token_id)
         self.pad_token_id: int | None = None  # GPT-2 has none; the scorer falls back to EOS
 
+    def encode(self, text: str) -> list[int]:
+        """Token ids of one text, never truncated, like the Hugging Face ``encode``."""
+        return list(self._tokenizer.encode(text).ids)
+
     def __call__(self, text: str, return_tensors: str | None = None) -> dict[str, Any]:
-        ids = self._tokenizer.encode(text).ids
+        ids = self.encode(text)
         if return_tensors is None:
             return {"input_ids": ids}
         if return_tensors == "pt":
