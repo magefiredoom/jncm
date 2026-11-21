@@ -70,6 +70,21 @@ Commands (login1, `~/jncm_git`, after dry runs): `GPT2_LARGE_PATH=$HOME/jncm/mod
 | 4763748 | `pilot_jepa_base` | 200 | 00:40:00 | jepa.sbatch, warm start from `tok_noisy_10k` | PENDING |
 | 4763749 | `pilot_jepa_base` eval | 32 x 1 | 00:40:00 | joint checkpoint, no `HEAD` | PENDING |
 
+### Corruption sweep, dev (TASKS E3, SPEC 10.3), submitted 2026-11-20 at `edd6a99` (agent, announced)
+
+Submitted while the E1 pilots were still queued (over an hour in `Priority`): the sweep uses only the vq + ce training and eval path, which canary 3 (4750663, 4754470) verified end to end, so its pilot had passed; flow, regress and JEPA, which E1 tests, are not involved. Training: `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 --wall=03:13:22 --submit --export=ALL,HEAD=ce,RUN_ID=corr_pXXX,STEPS=2000,GEN_PPL=1,TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,SETS=generator.corrupt.p_first=<p>` (wall = ceil(1.3 x 4.462225 x 2000) s). Eval: `chain.sh scripts/slurm/eval.sbatch 1 --wall=00:20:00 --array=0-2 --dependency=afterany:<training id> --submit --export=ALL,RUN_ID=corr_pXXX,HEAD=ce,TOKENIZER=results/tok_vq_10k/ckpt/latest.pt,N_SAMPLES=64,N_SEEDS=3,CKPT=results/corr_pXXX/ckpt/milestone_100.pt`. Dry runs first; `scontrol show job` confirms `Dependency=afterany:<training id>` for all three evals. The submission output is in `~/jncm_git/results/.submit_corr_pXXX.txt`.
+
+| Job ID | Run ID | STEPS | Time limit | Notes | State (at submission) |
+| --- | --- | --- | --- | --- | --- |
+| 4775911 | `corr_p080` | 2000 | 03:13:22 | `p_first` 0.8 (the default), `p_last` 0.2 | PENDING |
+| 4775912 | `corr_p080` eval | 64 x 3 | 00:20:00 | final milestone (`CKPT`), `--array=0-2` | PENDING (Dependency) |
+| 4775913 | `corr_p050` | 2000 | 03:13:22 | `p_first` 0.5 | PENDING |
+| 4775914 | `corr_p050` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency) |
+| 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING |
+| 4775916 | `corr_p030` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency) |
+
+Untested before this submission: a `SETS` value containing `=` inside `--export` (if Slurm splits it, the job stops at config load within a minute). After the evals: `python scripts/run_eval.py --run_id corr_pXXX --merge` for each, then the SPEC 10.3 rule.
+
 ## VERIFIED (command + last lines of output)
 
 ### Step cost and model sizes - VERIFIED 2026-11-20 (local CPU analysis of the model definitions; FIR `stat`)
@@ -669,7 +684,7 @@ Commands (login1, `~/jncm_git`, after dry runs): `GPT2_LARGE_PATH=$HOME/jncm/mod
   3. Obsolete, no action: the `pilot_gen_vq_ce` collision check (no `results/pilot_gen_vq_ce` exists; the OOM jobs died before writing anything), the `~/jncm_git/models` symlink (the pulled `eval.sbatch` honours `GPT2_LARGE_PATH`, which the launch command sets inline), and the cancel and resubmit of the four G1 evals (all 16 jobs had already failed).
   4. Done on FIR so far (each announced): `git checkout --` of the three `--time` patches and a fast-forward pull to `884a0db`, `scancel 4740493` (canary 1's dangling eval), `scancel 4748974` (probe 2, which had already finished), canaries 1 to 3 and probes 1 and 2 (see "FIR jobs"). The failed run's `results/pilot_gen_vq_ce/` held only `config.yaml`, `git_sha.txt` and empty `ckpt/`, `samples/` before canary 3 (no `latest.pt`), so the run id was reused on purpose.
   5. Done: eval 4754470 (see "FIR jobs"). Not done: `cd ~/jncm_git && python scripts/run_eval.py --run_id pilot_gen_vq_ce --merge` (it imports torch, 93 s cold; a one-off on the login node is what the RUNBOOK prescribes, but run it only if the shards need merging, since the aggregates already exist) and `python scripts/gate_report.py` on the pilot.
-  6. On FIR now: the E1 pilots (see "FIR jobs"). When they end: `sacct -j 4763744,4763745,4763746,4763747,4763748,4763749 --format=JobID,State,Elapsed,MaxRSS,ExitCode`, the last metrics record and `DONE` of each run, and `ls results/<run>/eval`; SPEC 10.2 decides pass or fail. If all pass, E3 (the corruption sweep, RUNBOOK section 0.4, `--wall=03:13:22` = ceil(1.3 x 4.462225 x 2000) s from the canary's `train_sec_per_step`) is next and may run on the current code. After T4.7: E2 (`mv results/pilot_gen_vq_ce results/pilot_gen_vq_ce_unpacked` first, never `rm`). Never leave `SETS`, `GEN_PPL`, `N_SAMPLES` or `N_SEEDS` exported (`launch_phase.sh` refuses).
+  6. On FIR now: the E1 pilots (see "FIR jobs"). When they end: `sacct -j 4763744,4763745,4763746,4763747,4763748,4763749 --format=JobID,State,Elapsed,MaxRSS,ExitCode`, the last metrics record and `DONE` of each run, and `ls results/<run>/eval`; SPEC 10.2 decides pass or fail. E3 (the corruption sweep) is already submitted (jobs 4775911 to 4775916, see "FIR jobs"; it needs only the vq + ce path that canary 3 verified). For reference, its training wall (RUNBOOK section 0.4, `--wall=03:13:22` = ceil(1.3 x 4.462225 x 2000) s from the canary's `train_sec_per_step`) is next and may run on the current code. After T4.7: E2 (`mv results/pilot_gen_vq_ce results/pilot_gen_vq_ce_unpacked` first, never `rm`). Never leave `SETS`, `GEN_PPL`, `N_SAMPLES` or `N_SEEDS` exported (`launch_phase.sh` refuses).
 - **Pilot I/O risk after the pull (REVIEW advisor note):** with milestones at 10%, a 300-step pilot writes `latest.pt` (about 1.5 GB at dev size, with Adam state) plus a milestone file every 30 steps inside its `00:20:00` limit. After each pilot, compare `sacct` Elapsed with the limit; a `TIMEOUT` voids that pilot under `RUNBOOK.md` section 0.1, and the pilot then needs a longer `--time` (or `generator.train.milestones` reduced through `SETS`).
 - **F16 sweep route (settled 2026-11-20):** it is submitted with `scripts/slurm/chain.sh scripts/slurm/gen.sbatch 1 ... --export=ALL,...,SETS=generator.corrupt.p_first=0.8` (exact commands: `RUNBOOK.md` section 0.4), not through `launch_phase.sh`, so the m6 refusal does not touch it; the dry-run form parses (checked locally), a Slurm `--export` value containing `=` is UNVERIFIED until the first submission. The old example keys in the `gen.sbatch` header (`generator.corruption.p`, `tokenizer.vq.codebook_size`) did not exist and would have raised; fixed, with a test.
 - **SPEC edit (researcher only):** Q14 in `docs/QUESTIONS.md` has the exact replacement sentences for SPEC 6.2 and 8 (joint runs warm-start from the staged tokenizer and are charged `tok_offset`). The code and the paper draft already follow it.
@@ -712,7 +727,7 @@ Commands (login1, `~/jncm_git`, after dry runs): `GPT2_LARGE_PATH=$HOME/jncm/mod
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Read the E1 pilots (flow, regress, JEPA) against SPEC 10.2; fix and test whatever they break. If they pass, submit E3, the corruption sweep (three 2,000-step dev runs), on the current code.
+1. Read the E1 pilots (flow, regress, JEPA) against SPEC 10.2 and the E3 sweep (jobs 4775911 to 4775916) when they finish; fix and test whatever they break; merge the sweep evals and apply the SPEC 10.3 rule.
 2. T4.7 (level-pair packing, plan mode for `jncm/generator/`) and T4.8 (`CKPT` in `eval.sbatch`); then E2, the packed re-pilot.
 3. Apply the SPEC 10.3 rule to the sweep, then E4 (G0 + G1 full runs) and E5 (G2 base) on the packed code.
 
