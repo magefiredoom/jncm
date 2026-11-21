@@ -79,8 +79,8 @@ Packed step *estimates* until E2 measures them: vq + ce, flow and regress 2.2 to
 
 ## 7. Storage (added 2026-11-21, after the sweep failures)
 
-Both running sweep jobs died at 00:06 on a short `torch.save` write, most likely the `/home` quota (STATE, FIR jobs). `results/` sits in `~/jncm_git` on `/home`. A 10,000-step dev run writes about 9.4 GB, so the main study and the ablations need about 100 GB, and results so far are about 33 GB (*estimate*). Before step 5 of section 3:
+Both running sweep jobs died at 00:06 on a short `torch.save` write: the `/home` quota was full (`diskusage_report`: 48 GiB of 48 GiB; STATE, FIR jobs). `~/jncm_git/results` links to `/home/aefad/jncm/results`. A 10,000-step dev run writes about 9.4 GB, so the main study and the ablations need about 100 GB, and results so far are about 33 GB (*estimate*). Before step 5 of section 3:
 
-1. The researcher runs `diskusage_report` and moves `~/jncm_git/results` to `/project` (persistent; `/scratch` is purged after 60 days, before Feb 1), with a symlink left at `~/jncm_git/results`, while no jncm job runs or is about to start.
+1. The researcher, while no jncm job runs or is about to start: `scontrol hold` the pending jncm jobs, `mkdir -p /scratch/aefad/jncm`, `mv /home/aefad/jncm/results /scratch/aefad/jncm/results`, `ln -s /scratch/aefad/jncm/results /home/aefad/jncm/results`, `scontrol release`. `/scratch` has 19 TiB; no `/project` is listed. Scratch is purged after about 60 days (check Fir's policy), so the small records (`metrics.jsonl`, `eval/`, `config.yaml`, `git_sha.txt`, `DONE`) are copied to the local repo with each results rsync.
 2. Optional, to shrink the footprint: `latest.pt` and the periodic `step_*.pt` files serve only for resuming (milestones carry no Adam state). After `DONE`, the periodic files of a finished run could go; only the researcher deletes files. Milestones stay: the evals need them.
 3. `scripts/budget.py` gains a disk line (GB per run from the config) so a chain that will not fit is refused before submission (a candidate task, after the move).
