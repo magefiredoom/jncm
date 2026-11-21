@@ -50,6 +50,9 @@
 # HEAD (ce, regress or flow) is required for a staged flow or regress run (G1):
 # the YAMLs say ce/vq and run_eval.py refuses a checkpoint whose head differs.
 # Leave it unset for ce runs and for joint JEPA checkpoints.
+# CKPT (optional) evaluates that one checkpoint instead of every milestone, e.g.
+# the final eval of SPEC 10.4 (v1.6): --array=0-4 with N_SAMPLES=1024 and
+# CKPT=results/<RUN_ID>/ckpt/milestone_100.pt. A missing file exits 2.
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -79,6 +82,10 @@ case "${HEAD:-}" in
     exit 2
     ;;
 esac
+if [[ -n "${CKPT:-}" && ! -f "${CKPT}" ]]; then
+  echo "ERROR: CKPT ${CKPT} not found (one checkpoint file, relative to the repo root)" >&2
+  exit 2
+fi
 if [[ ! -f scripts/run_eval.py ]]; then
   echo "ERROR: scripts/run_eval.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -123,6 +130,9 @@ if [[ -n "${TOKENIZER:-}" ]]; then
 fi
 if [[ -n "${HEAD:-}" ]]; then
   cmd+=(--head "${HEAD}")
+fi
+if [[ -n "${CKPT:-}" ]]; then
+  cmd+=(--ckpt "${CKPT}")
 fi
 cmd+=(
   --seeds "${seed}"

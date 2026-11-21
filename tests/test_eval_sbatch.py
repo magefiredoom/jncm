@@ -88,7 +88,7 @@ def _run_eval_sbatch(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "GPT2_MODEL_PATH", "GPT2_LARGE_PATH", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
+        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "CKPT", "GPT2_MODEL_PATH", "GPT2_LARGE_PATH", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
     }
     env.update({"SLURM_SUBMIT_DIR": str(root), "RUN_ID": "fake_run"})
     env.update(extra_env)
@@ -202,3 +202,34 @@ def test_gpt2_path_defaults_to_the_repo_models_directory(tmp_path: Path) -> None
     result = _run_eval_sbatch(root, {})
 
     assert _gpt2_arg(result.stdout) == "models/gpt2-large"
+
+
+def test_ckpt_evaluates_one_checkpoint(tmp_path: Path) -> None:
+    """T4.8: SPEC 10.4 evaluates the final milestone again with 1024 samples x 5 seeds;
+    without CKPT every milestone would be scored at that size."""
+    root = _fixture_repo(tmp_path)
+    (root / "results" / "fake_run" / "ckpt" / "milestone_100.pt").write_bytes(b"")
+
+    result = _run_eval_sbatch(root, {"CKPT": "results/fake_run/ckpt/milestone_100.pt"})
+
+    assert result.returncode == 0, result.stderr
+    assert "--ckpt results/fake_run/ckpt/milestone_100.pt" in result.stdout
+
+
+def test_no_ckpt_means_no_ckpt_flag(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {})
+
+    assert result.returncode == 0, result.stderr
+    assert "--ckpt" not in result.stdout
+
+
+def test_a_missing_ckpt_is_rejected_before_anything_runs(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"CKPT": "results/fake_run/ckpt/milestone_999.pt"})
+
+    assert result.returncode == 2
+    assert "CKPT" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout
