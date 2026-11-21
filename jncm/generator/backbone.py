@@ -16,6 +16,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from jncm.config import GeneratorConfig
+from jncm.generator.packing import (
+    pack_padded, pack_pairs, pair_groups, unpack_padded, unpack_pairs,
+)
 from jncm.levels import down, get_level_schedule
 
 if TYPE_CHECKING:
@@ -146,20 +149,22 @@ class LevelTransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         key_mask: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Run the block on [B, T, H] with optional valid-key mask [B, T]."""
+        """Run the block on [B, T, H]; boolean ``attn_mask`` [B, 1, T, T] (query may
+        attend to key) takes precedence over the valid-key ``key_mask`` [B, T]."""
         b, t, _ = x.shape
         normed = self.ln1(x)
         qkv = self.qkv(normed).reshape(b, t, 3, self.n_heads, self.head_dim)
         q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
-        attn_mask = None
-        if key_mask is not None:
-            attn_mask = key_mask[:, None, None, :]
+        mask = attn_mask
+        if mask is None and key_mask is not None:
+            mask = key_mask[:, None, None, :]
         attn = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            attn_mask=attn_mask,
+            attn_mask=mask,
             dropout_p=0.0,
             is_causal=False,
         )
@@ -200,27 +205,28 @@ class LevelBlockTransformer(nn.Module):
         self,
         x: torch.Tensor,
         key_mask: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Run all blocks on a packed [B*K, L, H] tensor."""
+        """Run all blocks on a packed [N, T, H] tensor (masks as in the block)."""
         for block in self.blocks:
-            x = block(x, key_mask=key_mask)
+            x = block(x, key_mask=key_mask, attn_mask=attn_mask)
         return x
 
     def forward_levels(
         self,
         level_inputs: Sequence[torch.Tensor],
         lengths: Sequence[int] | None = None,
+        layout: str = "pairs",
     ) -> list[torch.Tensor]:
-        """Run all levels in one packed pass and gather valid positions.
+        """Run all levels in one packed pass; one [B, lengths[k-1], H] tensor per level.
 
-        Args:
-            level_inputs: One tensor [B, l_k, H] per level, possibly left-padded
-                to a common length.
-            lengths: Valid length of each level; defaults to each tensor's width.
-
-        Returns:
-            One hidden tensor [B, lengths[k-1], H] per level.
+        ``level_inputs`` is one [B, >= l_k, H] tensor per level; ``lengths`` (default:
+        each width) marks the valid prefix. ``layout`` is ``"pairs"`` (SPEC 5.2 v1.6:
+        complementary levels share a sequence) or ``"padded"`` (the reference); see
+        ``jncm/generator/packing.py``. With dropout off both compute the same function.
         """
+        if layout not in ("pairs", "padded"):
+            raise ValueError(f"layout must be 'pairs' or 'padded', got {layout!r}")
         if not level_inputs:
             return []
         if lengths is None:
@@ -231,8 +237,6 @@ class LevelBlockTransformer(nn.Module):
         b, _, h = level_inputs[0].shape
         if h != self.H:
             raise ValueError(f"level inputs must have width H={self.H}, got {h}")
-        max_len = max(tensor.shape[1] for tensor in level_inputs)
-        padded: list[torch.Tensor] = []
         for idx, (tensor, length) in enumerate(zip(level_inputs, lengths)):
             if tensor.shape[0] != b or tensor.shape[2] != h:
                 raise ValueError("all level inputs must have shape [B, l_k, H]")
@@ -241,19 +245,15 @@ class LevelBlockTransformer(nn.Module):
                     f"length for level {idx + 1} must be in 1..{tensor.shape[1]}, "
                     f"got {length}"
                 )
-            if tensor.shape[1] < max_len:
-                tensor = F.pad(tensor, (0, 0, 0, max_len - tensor.shape[1]))
-            padded.append(tensor)
 
-        k = len(padded)
-        packed = torch.stack(padded, dim=1).reshape(b * k, max_len, h)
-        valid = torch.arange(max_len, device=packed.device).unsqueeze(0) < (
-            torch.as_tensor(lengths, device=packed.device).unsqueeze(1)
-        )
-        key_mask = valid.unsqueeze(0).expand(b, -1, -1).reshape(b * k, max_len)
-        hidden = self.forward(packed, key_mask=key_mask)
-        hidden = hidden.reshape(b, k, max_len, h)
-        return [hidden[:, idx, : lengths[idx], :] for idx in range(k)]
+        if layout == "pairs":
+            groups = pair_groups(lengths)
+            if groups is not None:
+                packed, attn_mask = pack_pairs(level_inputs, lengths, groups)
+                hidden = self.forward(packed, attn_mask=attn_mask)
+                return unpack_pairs(hidden, b, lengths, groups)
+        packed, key_mask = pack_padded(level_inputs, lengths)
+        return unpack_padded(self.forward(packed, key_mask=key_mask), b, lengths)
 
 
 class GeneratorBackbone(nn.Module):
@@ -288,6 +288,7 @@ class GeneratorBackbone(nn.Module):
             mlp_ratio=cfg.mlp_ratio,
             dropout=cfg.dropout,
         )
+        self.level_layout = "pairs"  # SPEC 5.2 v1.6; "padded" is the test reference
 
     @classmethod
     def from_tokenizer(
@@ -311,8 +312,9 @@ class GeneratorBackbone(nn.Module):
         level_inputs: Sequence[torch.Tensor],
         lengths: Sequence[int] | None = None,
     ) -> list[torch.Tensor]:
-        """Run all levels packed with block-diagonal attention."""
-        return self.trunk.forward_levels(level_inputs, lengths=lengths)
+        """Run all levels packed with block-diagonal attention (``level_layout``)."""
+        layout = self.level_layout
+        return self.trunk.forward_levels(level_inputs, lengths=lengths, layout=layout)
 
     def embed_level(
         self,

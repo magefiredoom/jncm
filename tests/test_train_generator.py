@@ -215,7 +215,10 @@ def test_one_packed_backbone_pass_per_loss(tmp_path: Path) -> None:
         handle.remove()
 
     assert len(shapes) == 1, f"expected one packed pass, saw {len(shapes)}"
-    assert shapes[0] == (N_SEQ * K, cfg.L, cfg.generator.H)
+    # SPEC 5.2 v1.6 (T4.7): complementary levels share one sequence, so the smoke
+    # schedule [1, 11, 22, 32] packs into K/2 = 2 sequences of 33 per sample
+    # (before v1.6: K sequences of L, half of them padding).
+    assert shapes[0] == (N_SEQ * (K // 2), cfg.L + 1, cfg.generator.H)
 
 
 @pytest.mark.parametrize(("head_name", "quantizer"), [("ce", "vq"), ("flow", "noisy")])

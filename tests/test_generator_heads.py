@@ -144,7 +144,12 @@ def test_regress_overfits_fixed_batch() -> None:
     assert isinstance(head, RegressHead)
     assert head.code_dim == 8
 
-    hidden, loss, per_level = _overfit(backbone, head, level_inputs, targets, 1200, 5e-3)
+    # Steps and lr changed in T4.7 (2026-11-20), thresholds unchanged. At 1200 steps and
+    # lr 5e-3 this single-batch Adam run is chaotic: a last-bit rounding change grows to a
+    # 1e-2 loss gap by step 400 even in float64, and whether step 1200 lands on a plateau
+    # is luck (it failed for 2 of 4 seeds with either backbone layout). 4000 steps at
+    # lr 1e-3 passed for 6 seeds x both layouts, worst loss 4.5e-4.
+    hidden, loss, per_level = _overfit(backbone, head, level_inputs, targets, 4000, 1e-3)
     assert loss < 2e-3, f"regress did not overfit: loss={loss}, per_level={per_level}"
     assert max(per_level) < 1e-3, f"per-level regress losses: {per_level}"
 
