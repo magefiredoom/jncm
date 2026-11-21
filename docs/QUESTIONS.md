@@ -70,3 +70,15 @@ Found in docs/REVIEW_2026-11-19.md (B2): `train_jepa.py` starts E and D from the
 
 ## Q15 - `swap` corruption versus NCM's uniform codebook replacement (INFO for the researcher, non-blocking)
 Found 2026-11-20 while checking the references (paper/references_verified.md). A helper's quote of NCM Sec. 3.4 / App. F.3 says NCM replaces some conditioning codes with entries "sampled uniformly from the same level's codebook" at a linearly decreasing rate, targets clean, selected mean rate 0.50. SPEC 5.4 `swap` replaces the code at (b, i) with the code at a random other (batch, position) of the same level, i.e. a draw from the data distribution of that level, not uniform over the codebook; for vq the two differ whenever code usage is uneven (usage is 73 to 99 percent at levels 2 to 10 and 57 to 79 percent at the two finest, G0a). SPEC calls the corruption a [DECISION] with guessed schedule values, so nothing was changed. If the researcher wants the NCM variant for the vq arm, it is a new `corrupt.mode` (for example `uniform`, vq only) plus a test; the F16 sweep would then compare the two. The noisy variant has no codebook, so `swap` stays its only discrete-style option. Also: the NCM text, as quoted, selects mean rate 0.50 and does not argue that it is best, so SPEC 5.4's "NCM found moderate mean rates best" is stronger than that quote.
+
+## Q16 - Metric packages for XSum and WMT14 (OPEN, blocks T6.5)
+ROUGE and BLEU need packages outside the AGENTS.md list (for example `rouge-score` and `sacrebleu`). Options: add them as eval-only dependencies, which the researcher approves under AGENTS rule 7; or write the metrics ourselves, which risks numbers that cannot be compared with published ones. ASSUMPTION until answered: none; T6.5 waits.
+
+## Q17 - Sudoku data source and serialization (OPEN, blocks T6.3)
+NCM (helper summary of arXiv 2610.14162 section 4.4) follows S-FLM and FMLM+, with a target of 89 tokens, a prefix of 91 and a vocabulary of 12, and evaluates at 40, 35 and 30 clues. Which dataset, split and token layout? The agent re-reads NCM and the S-FLM and FMLM+ papers before T6.3 and proposes SPEC 11.2 text, but the dataset choice is the researcher's.
+
+## Q18 - LM1B packing (OPEN, blocks T6.4)
+"[CLS] separators" (the earlier TASKS M6 line) suggests the MDLM-style setup: sentences tokenized with bert-base-uncased, concatenated with [CLS] between them and cut into blocks of 128. Wrapped (concatenated) or padded per sentence, and which split? NCM's text read so far does not say. ASSUMPTION for planning only: wrapped, the standard LM1B train and test split.
+
+## Q19 - Is T6.1a in paper 1? (OPEN, the researcher's call)
+T6.1a is eval-only (about 1 H100-h) and would show whether regress's collapse is a level-1 problem (claim C3). It adds a paragraph or a small table to a 4-page paper. Default: yes, if G1 regress is flagged as SPEC 10.5 describes.

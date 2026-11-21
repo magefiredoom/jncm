@@ -98,3 +98,35 @@ The researcher asked to "keep planning our next specs & tasks". SPEC stays untou
 ## 9. A G0 risk seen in the sweep (added 2026-11-21)
 
 At the end of 2,000 steps, vq + ce sits at Gen PPL about 96 to 103 with H 4.01 to 4.04 (`corr_p080`, `corr_p050`; 64 samples x 2 to 3 seeds). The G0 gate wants Gen PPL <= 20 at 10,000 steps. A log-log line through canary 3 (770 at step 300) and the sweep (98 at step 2000) reaches about 17 at step 10,000. That is an *estimate* only: the two runs have different learning-rate schedules and two points do not make a curve. G0 may therefore land close to its threshold. If it fails, SPEC 10.5 still lets G1 and G2 be judged against G0 at equal `total_positions`, and the paper reports the G0 number as measured. Changing the threshold or the step count is the researcher's call, and it should be made before the E4 results are seen, not after.
+
+## 10. M6 direction (drafted 2026-11-21 at the researcher's request; TASKS M6)
+
+**Scope.** Paper 1 (Feb 1) keeps its TinyStories scope. From M6 it takes at most T6.1a: an eval-only analysis that costs about 1 H100-h and sharpens claim C3. If T6.1a shows a large effect, T6.1b may follow (about 7 H100-h). Everything else is paper 2 and starts after the G1 and G2 verdicts.
+
+**Why this order.**
+1. The level-1 prior (T6.1) isolates the one failure the pilots already show.
+2. Sudoku (T6.3) is the cheapest conditional task (25M generator, L = 89, prefix 91). It tests exactness, where a continuous code is least likely to help, so a good result there would be strong evidence. It also exercises the prefix infrastructure (T6.2) at a small cost.
+3. MBR (T6.6) is cheap code that every conditional task reuses.
+4. LM1B (T6.4) is the standard unconditional benchmark and repeats our main comparison at a second scale.
+5. XSum and WMT14 (T6.5) are the most expensive: a 512-token source, a 150,000-step WMT generator in NCM, and new metric dependencies.
+
+**T6.1b decision rule (written now, applied after T6.1a).** Run T6.1b when the empirical prior raises regress's H by at least half of its gap to the data row (4.03) at the final milestone and brings `pairwise_agree` below 0.5. Otherwise report T6.1a alone.
+
+**Compute (*estimates*, H100-h, from NCM's sizes and our measured dev step; replaced by pilots).**
+
+| Experiment | Size | H100-h |
+| --- | --- | ---: |
+| T6.1a | 2 evals | about 1 |
+| T6.1b | one dev arm | about 7 |
+| Sudoku | 2 tokenizers + 4 arms, small | 10 to 20 |
+| LM1B | 2 tokenizers, 3 arms at 100,000 steps x batch 512 | 100 to 150 |
+| XSum | 3 arms (the prefix dominates the positions) | 80 to 150 |
+| WMT14 | 2 arms | over 150 |
+
+**Proposed SPEC section 11 (for the researcher; not applied).**
+- 11.1 Prefix conditioning. Text as T6.2; the shared-prefix implementation is an implementation note like the packing note in 5.2. The null prefix of length 1 is the unconditional case.
+- 11.2 Sudoku. Data and split per Q17. Serialization: 81 cells row-major, digits 1 to 9, plus the separator and blank tokens that make up NCM's 89 and 91 (to be confirmed against NCM, Q17). Metric: solve rate at 40, 35 and 30 clues; cell accuracy as a diagnostic.
+- 11.3 LM1B. bert-base-uncased, L = 128, [CLS]-separated packing per Q18, the standard train and test split; GPT-2-large Gen PPL and H with 5 x 256 samples; the data row recomputed first.
+- 11.4 XSum and WMT14. Lengths as T6.5; metrics with fixed implementations (Q16); two-stage training (unpaired, then pairs) as in NCM.
+- 11.5 MBR. N candidates, a mean-utility medoid, NFE reported. MBR rows are separate from the single-sample rows.
+- 11.6 Accounting. Prefix positions are counted in `gen_positions` (they pass through the backbone), and listed separately as `prefix_positions` so that both views can be reported.
