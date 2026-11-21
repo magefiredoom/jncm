@@ -1,6 +1,6 @@
 # STATE — jncm
 
-Last updated: 2026-11-20 (FIR is back; driven through the user's `newFir` zellij pane, every write announced; the SSH session dropped once and the user re-authenticated with Duo). All eleven findings of docs/REVIEW_2026-11-19.md are fixed (T5.7a/b/c, T5.8, T5.9a/b). **FIR showed that no generator, JEPA or eval job had ever run there; each canary found something the CPU tests cannot** (OOM at Slurm's 256 MB default `5c20748`; silent CPU fallback `3f1eed2`; GPT-2 path, eval `import jncm` and the 7-to-15-minute `import transformers` `40dde9e` and `5bc0904`; the lean tokenizer's missing `encode` `554e7e9`). **Canary 3 (`pilot_gen_vq_ce`, job 4750663, `884a0db`) is the first generator run that completed on FIR:** 300 steps, `COMPLETED` in `00:30:14`, `train_sec_per_step` 4.46, `MaxRSS` 8.3 GB, final loss 5.8538, Gen PPL 783.14, ten 493 MB milestones plus a 1.48 GB `latest.pt`, `DONE` written. Its eval (4750664) failed on the missing `encode` (fixed, tested with the real scorer); the eval was resubmitted alone as 4754470 at `554e7e9` and **COMPLETED** in `00:04:36` (20 eval records, Gen PPL 3760 at step 30 down to 770 at step 300, one seed, 32 samples: a pipeline check). VERIFIED: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` under Git Bash -> `453 passed, 1 skipped, 5 deselected in 106.83s` at `554e7e9`. **T4.7 (level-pair packing, half the dev step FLOPs) is done locally (`c979361`, 478 tests) but not yet pulled on FIR, whose SSH session dropped; the E1 pilots and the E3 sweep are queued.** **SPEC v1.6 (written at the researcher's request) and TASKS M5b define the work from here; the researcher chose dev for all long runs; the E1 pilots (g1 flow and regress, g2 JEPA; jobs 4763744 to 4763749) are submitted.** **Plan and chosen directions: `docs/PLAN_2026-11-20.md`** (level-pair packing T4.7 first, about half of a dev step's FLOPs are padding; the g1/g2 dev pilots for correctness in parallel; dev versus lite by a fixed rule after a packed re-pilot; paper method and setup updated). The 20-minute pilot wall does not fit a dev pilot (30 minutes for 300 steps); CUDA RNG restore on a resume, bf16 behaviour beyond this run and the eval on the cluster are still UNVERIFIED. Paper references verified (`paper/references_verified.md`).
+Last updated: 2026-11-20 (FIR is back; driven through the user's `newFir` zellij pane, every write announced; the SSH session dropped once and the user re-authenticated with Duo). All eleven findings of docs/REVIEW_2026-11-19.md are fixed (T5.7a/b/c, T5.8, T5.9a/b). **FIR showed that no generator, JEPA or eval job had ever run there; each canary found something the CPU tests cannot** (OOM at Slurm's 256 MB default `5c20748`; silent CPU fallback `3f1eed2`; GPT-2 path, eval `import jncm` and the 7-to-15-minute `import transformers` `40dde9e` and `5bc0904`; the lean tokenizer's missing `encode` `554e7e9`). **Canary 3 (`pilot_gen_vq_ce`, job 4750663, `884a0db`) is the first generator run that completed on FIR:** 300 steps, `COMPLETED` in `00:30:14`, `train_sec_per_step` 4.46, `MaxRSS` 8.3 GB, final loss 5.8538, Gen PPL 783.14, ten 493 MB milestones plus a 1.48 GB `latest.pt`, `DONE` written. Its eval (4750664) failed on the missing `encode` (fixed, tested with the real scorer); the eval was resubmitted alone as 4754470 at `554e7e9` and **COMPLETED** in `00:04:36` (20 eval records, Gen PPL 3760 at step 30 down to 770 at step 300, one seed, 32 samples: a pipeline check). VERIFIED: `.venv/Scripts/python.exe -m pytest -q -m "not slow"` under Git Bash -> `453 passed, 1 skipped, 5 deselected in 106.83s` at `554e7e9`. **The E1 pilots (noisy + flow, noisy + regress, JEPA base; jobs 4763744 to 4763749) all pass SPEC 10.2 (VERIFIED below; regress shows an unstable, low-entropy output). The E3 sweep runs `corr_p080` and `corr_p050` on the unpacked `edd6a99` (since 21:46 and 21:50, step 1500 at 23:45, the `p_first` overrides confirmed in their configs) and `corr_p030` is pending, so T4.7 (`c979361`, done locally, half the dev step FLOPs) is pulled only once `corr_p030` has started.** **SPEC v1.6 (written at the researcher's request) and TASKS M5b define the work from here; the researcher chose dev for all long runs; the E1 pilots (g1 flow and regress, g2 JEPA; jobs 4763744 to 4763749) have run.** **Plan and chosen directions: `docs/PLAN_2026-11-20.md`** (level-pair packing T4.7 first, about half of a dev step's FLOPs are padding; the g1/g2 dev pilots for correctness in parallel; dev versus lite by a fixed rule after a packed re-pilot; paper method and setup updated). The 20-minute pilot wall does not fit a dev pilot (30 minutes for 300 steps); CUDA RNG restore on a resume, bf16 behaviour beyond this run and the eval on the cluster are still UNVERIFIED. Paper references verified (`paper/references_verified.md`).
 
 Rule: newest information wins. Rewrite sections; do not append history.
 
@@ -63,12 +63,12 @@ Commands (login1, `~/jncm_git`, after dry runs): `GPT2_LARGE_PATH=$HOME/jncm/mod
 
 | Job ID | Run ID | STEPS | Time limit | Notes | State |
 | --- | --- | --- | --- | --- | --- |
-| 4763744 | `pilot_gen_noisy_flow` | 300 | 00:40:00 | gen.sbatch `HEAD=flow`, `GEN_PPL=1` (submission order of the dry run: flow first) | PENDING |
-| 4763745 | `pilot_gen_noisy_regress` | 300 | 00:40:00 | gen.sbatch `HEAD=regress`, `GEN_PPL=1` | PENDING |
-| 4763746 | `pilot_gen_noisy_flow` eval | 32 x 1 | 00:40:00 | `HEAD=flow`, `afterany` on the flow job | PENDING |
-| 4763747 | `pilot_gen_noisy_regress` eval | 32 x 1 | 00:40:00 | `HEAD=regress`, `afterany` on the regress job | PENDING |
-| 4763748 | `pilot_jepa_base` | 200 | 00:40:00 | jepa.sbatch, warm start from `tok_noisy_10k` | PENDING |
-| 4763749 | `pilot_jepa_base` eval | 32 x 1 | 00:40:00 | joint checkpoint, no `HEAD` | PENDING |
+| 4763744 | `pilot_gen_noisy_flow` | 300 | 00:40:00 | gen.sbatch `HEAD=flow`, `GEN_PPL=1` (submission order of the dry run: flow first) | COMPLETED 00:23:35 |
+| 4763745 | `pilot_gen_noisy_regress` | 300 | 00:40:00 | gen.sbatch `HEAD=regress`, `GEN_PPL=1` | COMPLETED 00:23:29 |
+| 4763746 | `pilot_gen_noisy_flow` eval | 32 x 1 | 00:40:00 | `HEAD=flow`, `afterany` on the flow job | COMPLETED 00:01:52 |
+| 4763747 | `pilot_gen_noisy_regress` eval | 32 x 1 | 00:40:00 | `HEAD=regress`, `afterany` on the regress job | COMPLETED 00:01:51 |
+| 4763748 | `pilot_jepa_base` | 200 | 00:40:00 | jepa.sbatch, warm start from `tok_noisy_10k` | COMPLETED 00:26:25 |
+| 4763749 | `pilot_jepa_base` eval | 32 x 1 | 00:40:00 | joint checkpoint, no `HEAD` | COMPLETED 00:01:51 |
 
 ### Corruption sweep, dev (TASKS E3, SPEC 10.3), submitted 2026-11-20 at `edd6a99` (agent, announced)
 
@@ -83,9 +83,20 @@ Submitted while the E1 pilots were still queued (over an hour in `Priority`): th
 | 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING |
 | 4775916 | `corr_p030` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency) |
 
+Polled 2026-11-20 23:45: 4775911 `RUNNING` since 21:46:23 and 4775913 `RUNNING` since 21:50:09 (both on `edd6a99`, step 1500), 4775915 `PENDING` (`ReqNodeNotAvail, UnavailableNodes:fc10515`), the three eval arrays `PENDING (Dependency)`. The `SETS` question below is answered: both configs carry their `p_first`.
+
 Untested before this submission: a `SETS` value containing `=` inside `--export` (if Slurm splits it, the job stops at config load within a minute). After the evals: `python scripts/run_eval.py --run_id corr_pXXX --merge` for each, then the SPEC 10.3 rule.
 
 ## VERIFIED (command + last lines of output)
+
+### E1 pilots g1 and g2 pass SPEC 10.2 - VERIFIED 2026-11-20 (FIR, code `edd6a99`, unpacked)
+- `sacct -j 4763744,...,4763749 -X -n --format=JobID,JobName,State,Elapsed,Start,End`: `4763744 jncm_gen COMPLETED 00:23:35`, `4763745 jncm_gen COMPLETED 00:23:29`, `4763748 jncm_jepa COMPLETED 00:26:25` (all started 21:31:33, wall 00:40:00), evals `4763746_0`, `4763747_0`, `4763749_0` `COMPLETED` in `00:01:5x`.
+- `ls results/<run>`: `DONE ckpt config.yaml eval git_sha.txt metrics.jsonl` for all three (`samples` too for the two generators); `git_sha.txt` `edd6a99e`. Last `train_sec_per_step`: flow `3.9907`, regress `3.9602`, JEPA `6.8279` (canary 3 vq + ce: 4.46). These timings are void after T4.7 (SPEC 10.2).
+- `grep -oE '(ppl|h_gpt2|pairwise_agree)_mean' results/<run>/eval/step_??????.json`, every milestone finite (32 samples, 1 seed: pipeline checks, not results):
+  - noisy + flow: Gen PPL `5524.09` (step 30) falling steadily to `2951.80` (step 300); H `4.769` to `4.534`; `pairwise_agree` <= `0.009`.
+  - noisy + regress: Gen PPL alternates between about 36 and 390 (`294.3, 39.4, 387.3, 35.9, 297.7, 72.1, 288.6, 220.2, 390.0, 37.3`); H `2.06` to `3.17` (data row 4.03); `pairwise_agree` up to `0.418`. A low-entropy, repetitive output that GPT-2 scores well; the G1 flag (`pairwise_agree` > 0.5) and the H condition are the checks that matter for this arm.
+  - JEPA base: Gen PPL `6560.89` (step 20) to `4319.28` (step 200), lowest `3796.45` at step 120; H `4.815` to `4.663`; `pairwise_agree` <= `0.005`.
+- E3 check on the same login: `grep -E 'p_first|p_last|mode:' results/corr_p0{80,50}/config.yaml` -> `mode: swap p_first: 0.8 p_last: 0.2` and `mode: swap p_first: 0.5 p_last: 0.2`, so the `SETS` value with `=` reaches the config. Both at `step: 1500` at 23:45 (about 4.05 s/step).
 
 ### T4.7 level-pair packing - VERIFIED 2026-11-20 (local CPU; commit `c979361`; NOT yet on FIR)
 - `tests/test_backbone_packing.py` (21 tests) failed first (`ImportError` on the missing helper), then passed. With dropout off the packed and padded layouts give equal outputs and equal parameter and input gradients within 1e-5 (smoke, dev, odd-K and uneven schedules), garbage past a level's length never enters, a group with padding stays finite in both directions, and the staged `ce`/`flow`/`regress` and joint JEPA losses have equal values and gradients under both layouts. The FLOP ratio at the smoke size is at most 0.55.
@@ -736,9 +747,9 @@ Untested before this submission: a `SETS` value containing `=` inside `--export`
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. FIR needs a new login (MFA, the researcher). Then re-prove the channel and pull `c979361` (T4.7) **only if none of the sweep trainings 4775911/4775913/4775915 has started**, so the three sweep arms run the same code. If one has started, wait until all three have, then pull; never pull between their starts. A pilot that starts after the pull runs the packed code (SPEC 10.2). Then restart the poller.
-2. Read the E1 pilots and the E3 sweep when they finish (SPEC 10.2 and 10.3). If the sweep ran packed, its `train_sec_per_step` is the packed dev timing and E2 is not needed.
-3. Apply the SPEC 10.3 rule, write the chosen `p_first` into the dev configs, then E4 (G0 + G1 full runs) and E5 (G2 base) on the packed code.
+1. Keep polling (guarded). When 4775915 (`corr_p030`) starts, pull `c979361` (T4.7) on FIR; pulling after all three sweep arms have started is safe for them (they imported `backbone.py` at start, `packing.py` is new and only the new backbone imports it, and `gpt2_lean.py`, the one lazy import, is unchanged), and the sweep evals then run packed code with the unchanged sampler.
+2. When the sweep evals end: `run_eval.py --run_id corr_pXXX --merge` (on a compute node, or locally after an rsync of `results/corr_p*`), then the SPEC 10.3 rule; write the chosen `p_first` into the dev configs.
+3. E2 (packed vq + ce re-pilot) is needed after all, because the sweep runs unpacked; then E4 and E5 with walls scaled from it (SPEC 10.2), following `docs/PLAN_DIRECTION_2026-11-20.md`.
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
