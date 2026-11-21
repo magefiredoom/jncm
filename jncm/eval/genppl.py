@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from pathlib import Path
@@ -92,23 +93,22 @@ class GPT2Scorer:
     def _load(self) -> None:
         if self._model is None:
             require_gpt2_weights(self.model_path)
-            start = time.perf_counter()
-            from transformers import AutoModelForCausalLM, AutoTokenizer
+            # No `transformers` here: importing it read every .py file under the package
+            # and took 7 to 15 minutes from the cluster's Lustre /home (gpt2_lean.py).
+            from jncm.eval.gpt2_lean import LeanGPT2Tokenizer, load_gpt2
 
-            imported = time.perf_counter()
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                str(self.model_path), local_files_only=True
+            start = time.perf_counter()
+            config = json.loads((self.model_path / "config.json").read_text(encoding="utf-8"))
+            self._tokenizer = LeanGPT2Tokenizer(
+                self.model_path, eos_token_id=config.get("eos_token_id") or 50256
             )
-            self._model = AutoModelForCausalLM.from_pretrained(
-                str(self.model_path), local_files_only=True
-            ).to(self.device)
-            self._model.eval()
+            tokenized = time.perf_counter()
+            self._model = load_gpt2(self.model_path, device=self.device)
             done = time.perf_counter()
-            # One line per load: on the cluster the import and the weights each took
-            # minutes from the network filesystem, and the log should say which.
+            # One line per load, so a slow filesystem shows up in the job log.
             print(
-                f"[genppl] transformers import {imported - start:.1f}s, "
-                f"GPT-2 load {done - imported:.1f}s ({self.model_path})",
+                f"[genppl] tokenizer {tokenized - start:.1f}s, "
+                f"GPT-2 weights {done - tokenized:.1f}s ({self.model_path})",
                 flush=True,
             )
 
