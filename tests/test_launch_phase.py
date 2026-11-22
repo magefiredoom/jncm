@@ -616,6 +616,26 @@ def test_full_run_errors_when_one_resume_interval_does_not_fit_the_wall(
     assert not _sbatch_lines(result.stdout)
 
 
+def test_sec_per_step_flag_overrides_the_pilot_and_says_so(tmp_path: Path) -> None:
+    """T4.15a, SPEC 10.2: after a step change, the re-pilot's time scaled by the
+    FLOP ratio sizes the other arms, so the flag wins over an older pilot."""
+    root = _fixture_repo(tmp_path)
+    _done(root, "tok_vq_10k")
+    _seed_pilot(root, "pilot_gen_vq_ce", 10.0, train_sec_per_step=4.0)
+
+    result = _run(root, ["g0", "full", "--sec_per_step=1.0"])
+
+    assert result.returncode == 0, result.stderr
+    gen = [line for line in _sbatch_lines(result.stdout) if "gen.sbatch" in line]
+    # 1.0 s/step: 1000 s per interval -> 9 intervals per chunk -> 2 chunks.
+    # The pilot's 4.0 s/step would give 2 intervals per chunk -> 5 chunks.
+    assert len(gen) == 2
+    assert (
+        "--sec_per_step, overrides pilot pilot_gen_vq_ce train_sec_per_step 4.0"
+        in result.stderr
+    )
+
+
 def test_full_run_prefers_train_sec_per_step_and_says_so(tmp_path: Path) -> None:
     """T5.7 m1: pilot wall time includes diagnostics, Gen PPL and saves."""
     root = _fixture_repo(tmp_path)

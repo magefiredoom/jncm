@@ -42,9 +42,11 @@
 #   (interval * sec_per_step)), n_chunks = ceil(steps / (interval *
 #   intervals_per_chunk)). One interval that does not fit into 0.9 * wall stops
 #   the phase with an error (the chain could never reach its next checkpoint).
-#   sec_per_step is train_sec_per_step (training step only) or, for pilots that
-#   predate it, sec_per_step, from the latest matching pilot
-#   results/<pilot>/metrics.jsonl, else --sec_per_step; with none of them the
+#   sec_per_step is --sec_per_step when given (it applies to every run of the
+#   phase and overrides any pilot: SPEC 10.2 scales the arms from a re-pilot
+#   after a change to the training step, T4.15a), else train_sec_per_step
+#   (training step only) or, for pilots that predate it, sec_per_step, from the
+#   latest matching pilot results/<pilot>/metrics.jsonl; with none of them the
 #   phase stops with an error. A G2 ablation never flies a pilot of its own
 #   (T5.7 m4): without a measurement of its own it is sized from the base
 #   pilot, and the plan line says so. The default wall is 03:00:00: our
@@ -311,7 +313,17 @@ compute_chunks() {
       fi
     done
   fi
-  if [[ -n "$measured" ]]; then
+  if [[ -n "$CLI_SEC" ]]; then
+    # T4.15a, SPEC 10.2: after a change to the training step, the re-pilot's
+    # time scaled by each arm's FLOP ratio sizes the other arms, so the flag
+    # wins over an older pilot; the plan line names what it overrides.
+    sec="$CLI_SEC"
+    if [[ -n "$measured" ]]; then
+      source="--sec_per_step, overrides ${source} ${measured}"
+    else
+      source="--sec_per_step"
+    fi
+  elif [[ -n "$measured" ]]; then
     read -r field sec <<< "$measured"
   else
     if [[ -z "$CLI_SEC" ]]; then
