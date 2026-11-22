@@ -134,6 +134,8 @@ FIR pull first: `git diff --name-only HEAD origin/main` -> `docs/STATE.md docs/T
 
 The pull rule of the G0 block applies to all four chains.
 
+**First chunks, 2026-11-22 01:32 (poller and `ls`/`grep` on FIR):** `5086493 TIMEOUT 03:00:15`, `5088616 TIMEOUT 03:00:15`, `5088620 TIMEOUT 03:00:12`, `5088655 RUNNING 03:08:19`. A `TIMEOUT` is the normal end of a non-final chunk: the job trains until the wall, and the next chunk (`afterany`) resumes from `latest.pt`, which is rewritten at every milestone (`gen.sbatch` header). `ls results/<run>/ckpt` for G0, flow and regress: `latest.pt milestone_010.pt milestone_020.pt milestone_030.pt`, last metrics record `step 3500` (so chunk 2 resumes at 3000 and redoes about 600 steps); JEPA `latest.pt milestone_010.pt`, last record `step 1500`. Measured `train_sec_per_step` on the packed code: G0 `2.886`, flow `2.964`, regress `2.779`, JEPA `5.844` (planned 2.94, 2.97, 2.97, 5.31). At 5.84 s, three JEPA intervals take about 4.9 h, inside the 6 h wall, so 4 chunks still cover 10,000 steps. The chunk-2 jobs wait on `ReqNodeNotAvail, UnavailableNodes:fc10515`. The resume check (chunk 2 redoes steps 3001 to about 3600, whose losses chunk 1 logged) runs once G0 chunk 2 has trained 30 minutes.
+
 ## VERIFIED (command + last lines of output)
 
 ### E2 packed re-pilot passes SPEC 10.2; E3 sweep complete - VERIFIED 2026-11-21 (FIR jobs; records copied and merged locally)
