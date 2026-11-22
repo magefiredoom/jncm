@@ -82,8 +82,9 @@ Submitted while the E1 pilots were still queued (over an hour in `Priority`): th
 | 4924498 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | as 4893126, with `GPT2_LARGE_PATH=~/jncm/models/gpt2-large` in `--export` (dry run checked) | COMPLETED 00:05:26 |
 | 4775913 | `corr_p050` | 2000 | 03:13:22 | `p_first` 0.5 | PENDING; FAILED 02:16:57 (same; `milestone_100.pt` complete) |
 | 4775914 | `corr_p050` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency); `_0..2` COMPLETED |
-| 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING; held and released 2026-11-21 around the move; RUNNING from 15:58:10 on `edd6a99` |
-| 4775916 | `corr_p030` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency) |
+| 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING; held and released 2026-11-21 around the move; COMPLETED 02:20:02 (from 15:58:10, on `edd6a99`) |
+| 4775916 | `corr_p030` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency); ran on the packed code `5385690` (sampler unchanged). `_0` COMPLETED on fc10603 (`step 2000 seed 0: Gen PPL 117.66, H 3.98`); `_2` COMPLETED on fc10615 (`Gen PPL 114.04, H 3.98`); `_1` FAILED on fc10609 after 00:03:02: `RuntimeError: device 'cuda' was requested and JNCM_REQUIRE_CUDA=1, but torch.cuda.is_available() is False on this host` (a node fault; the guard worked) |
+| 5079385 | `corr_p030` eval, seed 1 only | 64 x 1 of 3 | 00:20:00 | `--array=1`, `GPT2_LARGE_PATH` in `--export`; `SBATCH_EXCLUDE` was not honoured (`ExcNodeList=(null)`), so `scontrol update JobId=5079385 ExcNodeList=fc10609` (rc 0, read back) | PENDING |
 
 Polled 2026-11-20 23:45: 4775911 `RUNNING` since 21:46:23 and 4775913 `RUNNING` since 21:50:09 (both on `edd6a99`, step 1500), 4775915 `PENDING` (`ReqNodeNotAvail, UnavailableNodes:fc10515`), the three eval arrays `PENDING (Dependency)`. The `SETS` question below is answered: both configs carry their `p_first`.
 
