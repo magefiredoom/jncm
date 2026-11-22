@@ -79,10 +79,10 @@ Submitted while the E1 pilots were still queued (over an hour in `Priority`): th
 | 4775911 | `corr_p080` | 2000 | 03:13:22 | `p_first` 0.8 (the default), `p_last` 0.2 | PENDING; FAILED 02:19:46 (short write of `latest.pt` at step 2000; `milestone_100.pt` complete) |
 | 4775912 | `corr_p080` eval | 64 x 3 | 00:20:00 | final milestone (`CKPT`), `--array=0-2` | PENDING (Dependency); `_0`, `_1` COMPLETED; `_2` CANCELLED by the system (01:50) |
 | 4893126 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | `--array=2`, same export as 4775912; submitted 2026-11-21 at `edd6a99` | FAILED 00:04:12: `FileNotFoundError: GPT-2 weights not found at models/gpt2-large` (agent error: the shell after the reconnect had no `GPT2_LARGE_PATH`, and `--export=ALL` carried none) |
-| 4924498 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | as 4893126, with `GPT2_LARGE_PATH=~/jncm/models/gpt2-large` in `--export` (dry run checked) | PENDING |
+| 4924498 | `corr_p080` eval, seed 2 only | 64 x 1 of 3 | 00:20:00 | as 4893126, with `GPT2_LARGE_PATH=~/jncm/models/gpt2-large` in `--export` (dry run checked) | COMPLETED 00:05:26 |
 | 4775913 | `corr_p050` | 2000 | 03:13:22 | `p_first` 0.5 | PENDING; FAILED 02:16:57 (same; `milestone_100.pt` complete) |
 | 4775914 | `corr_p050` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency); `_0..2` COMPLETED |
-| 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING; held and released 2026-11-21 around the move |
+| 4775915 | `corr_p030` | 2000 | 03:13:22 | `p_first` 0.3 | PENDING; held and released 2026-11-21 around the move; RUNNING from 15:58:10 on `edd6a99` |
 | 4775916 | `corr_p030` eval | 64 x 3 | 00:20:00 | final milestone | PENDING (Dependency) |
 
 Polled 2026-11-20 23:45: 4775911 `RUNNING` since 21:46:23 and 4775913 `RUNNING` since 21:50:09 (both on `edd6a99`, step 1500), 4775915 `PENDING` (`ReqNodeNotAvail, UnavailableNodes:fc10515`), the three eval arrays `PENDING (Dependency)`. The `SETS` question below is answered: both configs carry their `p_first`.
@@ -92,6 +92,17 @@ Polled 2026-11-20 23:45: 4775911 `RUNNING` since 21:46:23 and 4775913 `RUNNING` 
 Footprint (from the file sizes above): a 10,000-step dev run writes about 9.4 GB (10 milestones of 0.49 GB, `step_005000.pt` and `step_010000.pt` of 1.48 GB each, `latest.pt` 1.48 GB). Results so far are about 33 GB (canary 3 6.4, the sweep about 12, the three pilots about 15; *estimate* from the model sizes). The main study and the ablations come to about 100 GB, which is more than a 50 GB `/home` can hold. `results/` has to move (researcher). `/scratch` is the space available, and Alliance scratch is purged after about 60 days (check Fir's policy). The small records the paper needs (`metrics.jsonl`, `eval/`, `config.yaml`, `git_sha.txt`, `DONE`) are therefore also copied off it from time to time.
 
 Untested before this submission: a `SETS` value containing `=` inside `--export` (if Slurm splits it, the job stops at config load within a minute). After the evals: `python scripts/run_eval.py --run_id corr_pXXX --merge` for each, then the SPEC 10.3 rule.
+
+### Packed re-pilot (TASKS E2, SPEC 10.2), submitted 2026-11-21 at `5385690` (agent, announced)
+
+Pull first: `corr_p030` (4775915) started at 15:58:10 on `edd6a99`. At 17:41 it had run `01:42:51` and logged `Step 1000 | Loss: 3.4646 | ... | Gen PPL: 189.45` (so every module, the lazily imported scorer included, was loaded). Then `git pull --ff-only` on FIR -> head `5385690`, `grep -c 'def pack_pairs' jncm/generator/packing.py` -> 1. All three sweep arms trained on `edd6a99`; their evals run the packed code, whose sampler is unchanged.
+
+`mv results/pilot_gen_vq_ce results/pilot_gen_vq_ce_unpacked` (FIR, and the same rename in the local records), then `GPT2_LARGE_PATH=$HOME/jncm/models/gpt2-large scripts/launch_phase.sh g0 pilot --wall=00:30:00` (dry run: 2 jobs, 1.00 requested GPU-hours), then `--submit`. `scontrol show job 5018535` -> `Dependency=afterany:5018534`.
+
+| Job ID | Run ID | STEPS | Time limit | Notes | State |
+| --- | --- | --- | --- | --- | --- |
+| 5018534 | `pilot_gen_vq_ce` | 300 | 00:30:00 | gen.sbatch `HEAD=ce`, `GEN_PPL=1`, packed code | PENDING (Priority) |
+| 5018535 | `pilot_gen_vq_ce` eval | 32 x 1 | 00:30:00 | `afterany:5018534` | PENDING (Dependency) |
 
 ## VERIFIED (command + last lines of output)
 
@@ -761,9 +772,9 @@ Untested before this submission: a `SETS` value containing `=` inside `--export`
 - Data path: `data/tinystories/`   Models path: `models/`
 
 ## Next 3 steps
-1. Poller (guarded, one tagged `sacct` line every 10 minutes in the shared pane): when 4775915 (`corr_p030`) starts, pull `c979361` and later on FIR (safe for running jobs, see the E1 VERIFIED block). When 4893126 completes, fetch the `corr_p080` seed 2 shard (records transfer as above) and merge locally.
-2. When `corr_p030` and its eval end: fetch its records, merge, apply SPEC 10.3, write `p_first` into the dev configs (own commit).
-3. E2 on the packed code (any time after the pull), then E4 + E5 (`docs/PLAN_DIRECTION_2026-11-20.md`); T4.9 to T4.12 in between, in that order.
+1. Poller (guarded, end-anchored prompt check, a unique tag per poll): wake on a failure, on the end of E2 (5018534, 5018535) or on the end of the `corr_p030` eval (4775916).
+2. E2: `train_sec_per_step` of `pilot_gen_vq_ce` against 4.46 (canary 3, unpacked) and 4.05 (sweep); Gen PPL trajectory in line with `pilot_gen_vq_ce_unpacked`; the walls for E4 and E5 from it (RUNBOOK 0.4).
+3. E3: fetch the `corr_p030` records, merge, apply SPEC 10.3, write `p_first` into the dev configs (own commit). Then E4 + E5, once the researcher confirms the block submission (plan section 6, item 2).
 
 ## Results log (human-run gates; paste numbers from results/ only)
 - T1.2 protocol gate (local, 2026-11-07): Gen PPL 10.80 +/- 0.26; H 4.03 +/- 0.01 (GPT-2 tokens) and 4.03 +/- 0.01 (dataset tokens); 256 samples x 5 seeds; verdict PASS; `results/t1_2_protocol_gate.json`.
