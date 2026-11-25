@@ -317,6 +317,26 @@ ssh fir 'cd ~/jncm && wc -c data/tinystories/train.bin data/tinystories/val.bin 
 
 Expected meta: `train_windows 3647424`, `val_windows 36658`, `L 128`, `V 8192`.
 
+### 1.3 Results back to the local machine (human step, MFA prompt)
+
+Run outputs live on FIR's scratch (`/scratch/$FIR_USER/jncm/results`, symlinked from
+`~/jncm/results`). `scripts/pull_results.sh` copies them into the local `results/` with one
+resumable `rsync`. It only copies: nothing on FIR is deleted (jobs still read the
+tokenizers and milestones), nothing local is deleted, and half-written `*.tmp` checkpoints
+are skipped. On Windows run it in WSL (Ubuntu has `rsync`); the repo on the external SSD
+is `/mnt/d/code/jncm` there:
+
+```bash
+cd /mnt/d/code/jncm
+source site.env
+bash scripts/pull_results.sh --print            # check the command first
+bash scripts/pull_results.sh --skip-running     # everything except the main chains still training
+bash scripts/pull_results.sh gen_vq_ce_dev      # one run, e.g. once its DONE exists
+```
+
+`-rt` keeps file times but not owners or permissions, which the exFAT drive cannot store.
+Run it again to resume after an interruption, or to pick up runs that finished later.
+
 ## 2. Phase 0 — tokenizers (G0a), then vq + ce (G0)
 
 ### 2.1 G0a recap: the two 10,000-step tokenizer runs
