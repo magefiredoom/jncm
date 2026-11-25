@@ -136,7 +136,21 @@ The pull rule of the G0 block applies to all four chains.
 
 **First chunks, 2026-11-22 01:32 (poller and `ls`/`grep` on FIR):** `5086493 TIMEOUT 03:00:15`, `5088616 TIMEOUT 03:00:15`, `5088620 TIMEOUT 03:00:12`, `5088655 RUNNING 03:08:19`. A `TIMEOUT` is the normal end of a non-final chunk: the job trains until the wall, and the next chunk (`afterany`) resumes from `latest.pt`, which is rewritten at every milestone (`gen.sbatch` header). `ls results/<run>/ckpt` for G0, flow and regress: `latest.pt milestone_010.pt milestone_020.pt milestone_030.pt`, last metrics record `step 3500` (so chunk 2 resumes at 3000 and redoes about 600 steps); JEPA `latest.pt milestone_010.pt`, last record `step 1500`. Measured `train_sec_per_step` on the packed code: G0 `2.886`, flow `2.964`, regress `2.779`, JEPA `5.844` (planned 2.94, 2.97, 2.97, 5.31). At 5.84 s, three JEPA intervals take about 4.9 h, inside the 6 h wall, so 4 chunks still cover 10,000 steps. The chunk-2 jobs wait on `ReqNodeNotAvail, UnavailableNodes:fc10515`. The resume check (chunk 2 redoes steps 3001 to about 3600, whose losses chunk 1 logged) runs once G0 chunk 2 has trained 30 minutes.
 
+**2026-11-23/24: four chunks failed on GPU-less nodes; chains repaired (agent, announced; `scontrol` allowed by the researcher).** No poller ran during a usage-limit pause, so these were found on 11-24. `sacct`: `5088617 FAILED 00:02:10` (fc10609), `5088618 FAILED 00:01:06` (fc10608), `5088621 FAILED 00:02:03` (fc10612), `5088656 FAILED 00:02:02` (fc10608), all between 08:09 and 08:31 on 11-23; every log ends in `RuntimeError: device 'cuda' was requested and JNCM_REQUIRE_CUDA=1, but torch.cuda.is_available() is False on this host` (the guard worked; no checkpoint changed). Healthy chunks ran on fc10613, fc10607, fc10614, fc10514 and fc10615; `5086494` (G0 chunk 2) `TIMEOUT 03:00:01` on fc10607 as designed. Repair:
+- `scontrol update JobId=<id> ExcNodeList=fc10608,fc10609,fc10612` on the 11 pending jncm jobs (5086495, 5086496, 5086497, 5088619, 5088622, 5088623, 5088624, 5088625, 5088657, 5088658, 5088659), each read back.
+- Missing chunks appended after each chain's last chunk, exports copied from `sacct --format=SubmitLine` of the first chunk (dry runs first): flow `chain.sh gen.sbatch 2 --wall=03:00:00 --dependency=afterany:5088619` -> 5994035, 5994036; regress `chain.sh gen.sbatch 1 --wall=03:00:00 --dependency=afterany:5088623` -> 5994037; JEPA `chain.sh jepa.sbatch 1 --wall=06:00:00 --dependency=afterany:5088658` -> 5994038; the same node exclusion on all four. A chunk advances about 3,000 steps from the last milestone, so flow (at 3000, two chunks lost) needs 3 more, regress and JEPA 2 more; requeueing the failed jobs instead could have run two chunks of one run at once.
+- Evals repointed: `scontrol update JobId=5088624 Dependency=afterany:5994036`, `5088625 -> afterany:5994037`, `5088659 -> afterany:5994038` (read back `(unfulfilled)`).
+
+| Job ID | Run ID | STEPS | Time limit | Notes | State |
+| --- | --- | --- | --- | --- | --- |
+| 5994035, 5994036 | `gen_noisy_flow_dev` | 10000 | 03:00:00 | added chunks, after 5088619 | PENDING |
+| 5994037 | `gen_noisy_regress_dev` | 10000 | 03:00:00 | added chunk, after 5088623 | PENDING |
+| 5994038 | `jepa_base_dev` | 10000 | 06:00:00 | added chunk, after 5088658 | PENDING |
+
 ## VERIFIED (command + last lines of output)
+
+### GPU resume is bitwise exact - VERIFIED 2026-11-24 (FIR, `gen_vq_ce_dev`)
+- G0 chunk 1 (5086493, fc10613) trained to about step 3600 and saved `latest.pt` at 3000; chunk 2 (5086494, fc10607) resumed from 3000 and redid the steps chunk 1 had logged. `sed -n 8p` and `9p` of `results/gen_vq_ce_dev/metrics.jsonl`: `"step": 3500 "train_loss": 3.8287889659404755 "sec_per_step": 2.893...` (chunk 1) and `"step": 3500 "train_loss": 3.8287889659404755 "sec_per_step": 2.958...` (chunk 2, after the resume). Identical to the last digit: model, optimizer, data stream and RNG state (CUDA included) are restored exactly on the GPU. This closes the "CUDA RNG restore on a resume" item that was UNVERIFIED since T5.8.
 
 ### E2 packed re-pilot passes SPEC 10.2; E3 sweep complete - VERIFIED 2026-11-21 (FIR jobs; records copied and merged locally)
 - `sacct` (poller, 20:39:58): `5018534 jncm_gen COMPLETED 00:17:27`, `5018535_0 jncm_eval COMPLETED 00:00:35`, `5079385_1 jncm_eval COMPLETED 00:00:59` (the `corr_p030` seed-1 rerun, `ExcNodeList=fc10609`).
@@ -814,7 +828,7 @@ The pull rule of the G0 block applies to all four chains.
 
 ## Next 3 steps
 1. All four main chains are submitted (G0 5086493 to 5086497; G1 flow 5088616 to 5088619 + 5088624; G1 regress 5088620 to 5088623 + 5088625; G2 5088655 to 5088659). Poll (guarded) for failures and the first chunk boundaries.
-2. Check the first G0 chunk boundary by hand (the loss right after the resume continues the record before it; CUDA RNG restore on the GPU is still UNVERIFIED).
+2. Keep a poller running at all times (a usage-limit pause left four failed chunks unseen for a day). When a chunk fails on a new GPU-less node: exclude the node on every pending jncm job and append one chunk per lost chunk (as on 11-24). GPU resume is VERIFIED bitwise (11-24).
 3. After the training chains: the 256 x 5 evals (in the chains), the 1024 x 5 final evals (`CKPT`, T4.8), merges (T4.9 or locally), `gate_report.py`; the first chunk boundary checked by hand (resume on the GPU).
 
 ## Results log (human-run gates; paste numbers from results/ only)
