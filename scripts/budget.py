@@ -27,6 +27,22 @@ G2 ablations never fly a pilot of their own; they are projected from the base
 pilot (pilot_jepa_base, config suffix applied), exactly as
 ``scripts/launch_phase.sh`` sizes them.
 
+Disk (T4.10, SPEC 7 v1.7): after the table, one ``DISK <run>:`` line per run
+gives what the whole run writes under ``results/<run>/ckpt`` (GB = 1e9 B, with
+GiB beside it because the cluster quota is in GiB). It comes from the parameter
+counts in the pilot's metrics records (``n_params_*``, logged at step 1) and the
+save cadence of the run's config family (``generator.train.milestones`` and
+``save_every`` of ``configs/tinystories_<suffix>.yaml`` for staged runs,
+``configs/jepa_<suffix>.yaml`` for G2): every milestone file holds 4 B per stored
+parameter, and ``latest.pt`` plus every ``step_<n>.pt`` add 8 B of Adam state per
+trainable parameter. A staged generator stores its backbone and head (the frozen
+tokenizer is not saved); a joint run stores tokenizer, backbone and head, plus
+the EMA copy of the tokenizer when its pilot ran with ``ema``. Ablations use the
+base pilot's counts, an upper bound (``head: regress`` and ``ema: false`` store
+less). A run without counts, or a tokenizer run (its trainer saves no
+milestones), is ``n/a`` with the reason; ``n/a`` never changes the exit status.
+The figure is the whole run, not what is left of a run in progress.
+
 Usage:
     python scripts/budget.py
     python scripts/budget.py --results results
@@ -39,7 +55,13 @@ import argparse
 import json
 from pathlib import Path
 
+import yaml
+
 MAX_HOURS = 12.0
+ROOT = Path(__file__).resolve().parents[1]
+GB = 1e9
+GIB = float(2**30)
+COUNT_KEYS = ("n_params_tokenizer", "n_params_backbone", "n_params_head", "n_params_total")
 
 # (phase, run id, pilot run id, steps) -- the dev budgets the launch kit submits.
 RUNS: list[tuple[str, str, str, int]] = [
@@ -118,6 +140,112 @@ def pilot_sec_per_step(results_dir: Path, pilot_id: str) -> float | None:
     return float(value)
 
 
+def pilot_param_counts(results_dir: Path, pilot_id: str) -> dict[str, object] | None:
+    """The last pilot record with every ``n_params_*`` count (and ``ema``), or None."""
+    path = results_dir / pilot_id / "metrics.jsonl"
+    if not path.is_file():
+        return None
+    found: dict[str, object] | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if all(isinstance(record.get(key), int) for key in COUNT_KEYS):
+            found = {key: record[key] for key in COUNT_KEYS}
+            if "ema" in record:
+                found["ema"] = record["ema"]
+    return found
+
+
+def family_config(config: Path | None, suffix: str, family: str) -> Path:
+    """The config a row's cadence comes from: ``family`` is tinystories or jepa."""
+    if config is not None and config.stem.startswith(f"{family}_"):
+        return config
+    return ROOT / "configs" / f"{family}_{suffix or 'dev'}.yaml"
+
+
+def path_label(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def save_cadence(config: Path) -> tuple[int, int]:
+    """(number of milestone files, save_every) of ``generator.train`` in a config."""
+    data = yaml.safe_load(config.read_text(encoding="utf-8"))
+    try:
+        train = data["generator"]["train"]
+        milestones = len(train["milestones"]) if train["save_milestones"] else 0
+        save_every = int(train["save_every"])
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"{config}: no generator.train milestones/save_milestones/save_every") from exc
+    if save_every < 1:
+        raise ValueError(f"{config}: save_every must be >= 1, got {save_every}")
+    return milestones, save_every
+
+
+def run_disk_bytes(
+    counts: dict[str, object], *, joint: bool, steps: int, milestones: int, save_every: int
+) -> tuple[int, int, int]:
+    """(bytes per milestone, bytes per resume file, number of resume files).
+
+    Resume files: latest.pt plus a step_<n>.pt every save_every steps and at the
+    last step (jncm/train_generator.py, jncm/train_jepa.py).
+    """
+    tokenizer = int(counts["n_params_tokenizer"])  # type: ignore[arg-type]
+    if joint:
+        trainable = int(counts["n_params_total"])  # type: ignore[arg-type]
+        stored = trainable + (tokenizer if counts["ema"] else 0)
+    else:
+        trainable = int(counts["n_params_backbone"]) + int(counts["n_params_head"])  # type: ignore[arg-type]
+        stored = trainable
+    milestone = 4 * stored
+    resume = 4 * stored + 8 * trainable
+    periodic = steps // save_every + (1 if steps % save_every else 0)
+    return milestone, resume, 1 + periodic
+
+
+def disk_line(
+    results_dir: Path,
+    run_id: str,
+    pilot_id: str,
+    *,
+    phase: str,
+    steps: int,
+    cadence_config: Path,
+    from_base: bool,
+) -> tuple[str, int | None]:
+    """One ``DISK <run>:`` line and the whole run's bytes (None when n/a)."""
+    if is_tokenizer(run_id):
+        return (
+            f"DISK {run_id}: n/a (tokenizer run: its trainer saves no milestones;"
+            " not modelled, TASKS E8)",
+            None,
+        )
+    counts = pilot_param_counts(results_dir, pilot_id)
+    if counts is None:
+        return f"DISK {run_id}: n/a (pilot {pilot_id} has no n_params_* record)", None
+    joint = phase == "G2"
+    if joint and not isinstance(counts.get("ema"), bool):
+        return f"DISK {run_id}: n/a (pilot {pilot_id} records no ema flag)", None
+    if not cadence_config.is_file():
+        return f"DISK {run_id}: n/a (no config {path_label(cadence_config)} for the save cadence)", None
+    milestones, save_every = save_cadence(cadence_config)
+    milestone, resume, n_resume = run_disk_bytes(
+        counts, joint=joint, steps=steps, milestones=milestones, save_every=save_every
+    )
+    total = milestones * milestone + n_resume * resume
+    bound = f"; upper bound (base pilot {pilot_id})" if from_base else ""
+    line = (
+        f"DISK {run_id}: {total / GB:.2f} GB = {total / GIB:.2f} GiB (whole run: "
+        f"{milestones} milestone(s) x {milestone / GB:.3f} GB + {n_resume} resume file(s)"
+        f" x {resume / GB:.3f} GB; params from {pilot_id}{bound};"
+        f" cadence {path_label(cadence_config)})"
+    )
+    return line, total
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, default=Path("results"))
@@ -144,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     missing: list[str] = []
     flagged: list[tuple[str, float]] = []
     measured: list[float] = []
+    # T4.10: the disk lines are printed after the table (its rows stay unchanged).
+    disk_lines: list[str] = []
+    disk_total = 0
+    disk_sized = 0
+    disk_na = 0
     for phase, base_run, base_pilot, steps in RUNS:
         run_id = suffixed_run_id(base_run, suffix)
         if (args.results / run_id / "DONE").is_file():
@@ -152,12 +285,30 @@ def main(argv: list[str] | None = None) -> int:
             totals.setdefault(phase, 0.0)
             measured.append(0.0)
             print(f"{phase:<5} {run_id:<27} {steps:>7} {'DONE':>10} {0.0:>7.2f}")
+            disk_lines.append(f"DISK {run_id}: DONE (nothing left to write)")
             continue
         pilot_id = suffixed_run_id(base_pilot, suffix)
-        if phase == "G2" and base_run != "jepa_base_dev":
+        from_base = phase == "G2" and base_run != "jepa_base_dev"
+        if from_base:
             # T5.7 m5(b): ablations have no pilot of their own; the base
             # pilot (same config suffix) is their measurement.
             pilot_id = suffixed_run_id("pilot_jepa_base", suffix)
+        family = "jepa" if phase == "G2" else "tinystories"
+        line, size = disk_line(
+            args.results,
+            run_id,
+            pilot_id,
+            phase=phase,
+            steps=steps,
+            cadence_config=family_config(args.config, suffix, family),
+            from_base=from_base,
+        )
+        disk_lines.append(line)
+        if size is None:
+            disk_na += 1
+        else:
+            disk_total += size
+            disk_sized += 1
         sec = pilot_sec_per_step(args.results, pilot_id)
         if sec is None:
             print(f"{phase:<5} {run_id:<27} {steps:>7} {'MISSING':>10} {'n/a':>7}")
@@ -174,6 +325,17 @@ def main(argv: list[str] | None = None) -> int:
         if phase in totals:
             print(f"{phase} subtotal: {totals[phase]:.2f} H100-hours")
     print(f"TOTAL: {sum(measured):.2f} H100-hours over {len(measured)} run(s)")
+
+    print(
+        "== disk per run (GB = 1e9 B; milestones 4 B per stored parameter,"
+        " resume files 4 B + 8 B of Adam state per trainable parameter)"
+    )
+    for line in disk_lines:
+        print(line)
+    print(
+        f"DISK TOTAL: {disk_total / GB:.2f} GB = {disk_total / GIB:.2f} GiB over"
+        f" {disk_sized} run(s) with a size (whole runs, not DONE); {disk_na} n/a"
+    )
 
     for run_id, hours in flagged:
         print(f"FLAG {run_id}: {hours:.2f} h > {MAX_HOURS:.1f} h (chain it into shorter chunks)")

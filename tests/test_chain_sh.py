@@ -43,6 +43,9 @@ def _clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
         if key not in {"SBATCH_ACCOUNT", "SETS"}
     }
     env["SBATCH_ACCOUNT"] = "def-test"
+    # T4.10: keep the storage guard hermetic (a host temp dir may sit under /home);
+    # tests/test_results_guard.py exercises the guard itself.
+    env["JNCM_FORBID_RESULTS_UNDER"] = "/jncm-test-no-such-prefix"
     env.update(extra or {})
     return env
 

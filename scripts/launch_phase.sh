@@ -156,6 +156,17 @@ die() {
   exit 2
 }
 
+resolve_path() {
+  # T4.10: the absolute, link-free form of $1 (cygpath -m only on Git Bash),
+  # the same rule as scripts/slurm/chain.sh.
+  local resolved
+  resolved="$(realpath -m -- "$1")"
+  if command -v cygpath >/dev/null 2>&1; then
+    resolved="$(cygpath -m -- "$resolved")"
+  fi
+  printf '%s' "$resolved"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --submit) SUBMIT=1 ;;
@@ -654,6 +665,18 @@ fi
 PLAN_CONFIG="${CONFIG:-$PLAN_CONFIG}"
 
 echo "launch_phase ${PHASE} ${MODE}: wall ${WALL}, config ${CONFIG:-template default}, run-id suffix ${SUFFIX:-none}, account ${SBATCH_ACCOUNT}, $([[ -n "$SUBMIT" ]] && echo submit || echo "dry-run (pass --submit)")"
+# T4.10 (SPEC 7 v1.7): refuse a results root under the forbidden prefix before
+# the first chain is submitted; chain.sh checks again for each chain.
+FORBID_RAW="${JNCM_FORBID_RESULTS_UNDER:-/home}"
+FORBID_ROOT="$(resolve_path "$FORBID_RAW")"
+RESULTS_ROOT="$(resolve_path results)"
+echo "results root: ${RESULTS_ROOT} (submission refused under ${FORBID_RAW}; JNCM_FORBID_RESULTS_UNDER, SPEC 7)"
+if [[ "$RESULTS_ROOT" == "$FORBID_ROOT" || "$RESULTS_ROOT" == "$FORBID_ROOT"/* ]]; then
+  if [[ -n "$SUBMIT" ]]; then
+    die "results resolves to ${RESULTS_ROOT}, under ${FORBID_RAW} (JNCM_FORBID_RESULTS_UNDER); SPEC 7: run outputs live on scratch, with results a symlink there (RUNBOOK). Nothing was submitted."
+  fi
+  echo "WARNING: results resolves to ${RESULTS_ROOT}, under ${FORBID_RAW}; --submit would be refused (SPEC 7)" >&2
+fi
 case "$PHASE" in
   g0) run_g0 ;;
   g1) run_g1 ;;

@@ -30,9 +30,29 @@
 # template sets 1 CPU, 4G, 00:15:00). Its id is printed as MERGE_JOB_ID;
 # CHAIN_LAST_ID stays the last chunk's id.
 #
+# Storage guard (T4.10, SPEC 7 v1.7): --submit refuses when `realpath results`
+# (links followed) lies under JNCM_FORBID_RESULTS_UNDER (default /home; on FIR
+# results is a symlink to /scratch). A dry run prints the resolved root and only
+# warns. On Git Bash both paths are normalised with cygpath -m (absent on Linux).
+#
 # SBATCH_ACCOUNT must be set; the account is never guessed (SPEC 7).
 
 set -euo pipefail
+
+resolve_path() {
+  # The absolute, link-free form of $1; cygpath -m only where it exists (Git Bash).
+  local resolved
+  resolved="$(realpath -m -- "$1")"
+  if command -v cygpath >/dev/null 2>&1; then
+    resolved="$(cygpath -m -- "$resolved")"
+  fi
+  printf '%s' "$resolved"
+}
+
+results_root_forbidden() {
+  # results_root_forbidden <root> <prefix>: true if root is the prefix or below it.
+  [[ "$1" == "$2" || "$1" == "$2"/* ]]
+}
 
 usage() {
   echo 'usage: scripts/slurm/chain.sh <script> <n_chunks> [--export=ALL,K=V,...]' >&2
@@ -107,6 +127,17 @@ if ((merge_after)); then
   fi
 fi
 
+# T4.10: the storage guard, before anything is submitted.
+forbid_raw="${JNCM_FORBID_RESULTS_UNDER:-/home}"
+forbid_root="$(resolve_path "$forbid_raw")"
+results_root="$(resolve_path results)"
+if results_root_forbidden "$results_root" "$forbid_root"; then
+  if ((submit)); then
+    die "results resolves to ${results_root}, under ${forbid_raw} (JNCM_FORBID_RESULTS_UNDER); SPEC 7: run outputs live on scratch, with results a symlink there (RUNBOOK)"
+  fi
+  echo "WARNING: results resolves to ${results_root}, under ${forbid_raw} (JNCM_FORBID_RESULTS_UNDER); --submit would be refused (SPEC 7)" >&2
+fi
+
 base_args=(sbatch "--account=${SBATCH_ACCOUNT}" "--gres=${gres}" "--time=${wall}")
 if [[ -n "$array" ]]; then
   base_args+=("--array=${array}")
@@ -116,7 +147,7 @@ if [[ -n "$export_spec" ]]; then
 fi
 
 if ((!submit)); then
-  echo "DRY-RUN: ${chunks} chunk(s) of ${script} (--wall ${wall}); nothing submitted (pass --submit)"
+  echo "DRY-RUN: ${chunks} chunk(s) of ${script} (--wall ${wall}); nothing submitted (pass --submit); results root ${results_root}, refused under ${forbid_raw}"
 fi
 
 prev=""
