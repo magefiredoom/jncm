@@ -1,4 +1,4 @@
-# SPEC — jncm (v1.6, 2026-11-20)
+# SPEC — jncm (v1.7, 2026-11-25)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
 
@@ -13,6 +13,8 @@ Source of truth for all implementation work. Items tagged **[DECISION]** are des
 **v1.5 changes** (from docs/REVIEW_M3-M5.md): the generator's input embedding is trained in staged and joint runs alike (5.1); gradient accumulation and per-arm parameter counts (5.7); denser milestones, optimizer-free milestone files (6.2).
 
 **v1.6 changes** (2026-11-20; drafted by the agent at the researcher's explicit request after the first runs on the cluster, for the researcher to review): the backbone packs complementary levels instead of padding every level to L (5.2); all long runs use the dev size (5.7); the GPT-2 scorer's implementation and the cluster rule against importing `transformers` (6.1); the JEPA warm start is charged to the joint run (6.2, 8; QUESTIONS Q14); cluster runtime requirements (7); the experiment protocol: pilots, the corruption sweep and its selection rule, full runs, gates, ablation order, seeds (10, new).
+
+**v1.7 changes** (2026-11-25; drafted by the agent on 2026-11-21 in docs/PLAN_DIRECTION_2026-11-20.md section 8 and applied at the researcher's request): run outputs live on scratch, small records are copied to the local repository, and the staged tokenizers keep a second copy (7); per-seed eval shards are merged by a CPU job (6.1); when a run counts as trained (10.2, 10.3); a lost eval task is rerun alone (10.3); submission order and queue priority of the full runs (10.4).
 
 ## 1. Purpose and scope
 
@@ -199,6 +201,7 @@ AdamW, lr 3e-4 cosine to 3e-5, betas (0.9, 0.95), weight decay 0.1, warmup 500, 
 - H = mean over samples of the entropy (nats) of the empirical unigram distribution of that sample's tokens. Compute it on GPT-2 tokens; also compute it on the dataset's own tokens and record which one matches the real-data reference.
 - Diversity, reported with every Gen PPL (perplexity and per-sample entropy cannot reveal that all samples are alike): `unique_frac` = distinct decoded samples / n_samples (catches exact duplicates only; channel noise can keep it near 1 for a collapsed model); `pairwise_agree` = mean fraction of identical token positions over 1,000 random pairs of distinct samples, on dataset tokens (catches near-duplicates; about 1 means collapsed).
 - Scorer implementation (v1.6): GPT-2-large (the released weights and BPE tokenizer) runs through `jncm/eval/gpt2_lean.py`, a PyTorch forward pass with the `tokenizers` BPE and its own safetensors reader. It must agree with the Hugging Face implementation (`tests/test_gpt2_lean.py`: logits within 1e-4 on a random model and 5e-3 on gpt2-large, identical token ids) and reproduce the protocol-gate row of our pipeline (10.80 / 4.03, recorded 2026-11-06 and reproduced 2026-11-20 to 4e-8 in perplexity). Code that runs on the cluster must not import `transformers`: its import reads every module file of the package and took 7 to 15 minutes from the cluster filesystem. Model comparisons are reported as ratios to our own data row (10.80 / 4.03), not to the 9.67 / 3.96 above.
+- Merging (v1.7): per-seed eval shards are merged by a CPU job chained `afterok` on the eval array (T4.9); no Python runs on a login node.
 - **Protocol gate (T1.2):** the same pipeline applied to real validation sequences must give about 9.67 PPL and about 3.96 H (tolerance 15% and 0.15). If not, debug the protocol before any model comparison. Do not adjust the metric to hit the numbers; write the diagnosis in docs/QUESTIONS.md.
 
 ### 6.2 Token accounting (for the sample-efficiency claim)
@@ -216,6 +219,7 @@ Each evaluation writes 32 decoded samples to `results/<run_id>/samples/step_<n>.
 - Seed everything (python, numpy, torch, DataLoader generators). Checkpoints are resumable.
 - No wandb. Logging is JSONL plus `scripts/plot_curves.py`.
 - Cluster runtime (v1.6, learned from the first runs on the cluster): a GPU job stops instead of falling back to the CPU (`JNCM_REQUIRE_CUDA=1` in every GPU template, `jncm.utils.resolve_device`); every Slurm template that starts a torch process declares `--cpus-per-task` and `--mem` (the cluster default is 1 CPU and 256 MB); scripts under `scripts/` run without an editable install of `jncm`; a resumed run restores the data stream and every RNG state, and a checkpoint without that state is refused.
+- Storage (v1.7): run outputs live on the cluster's scratch filesystem: `results` resolves there through a symlink, and a submission refuses a results root under `/home` (T4.10). After a run ends, its small records (`config.yaml`, `git_sha.txt`, `metrics.jsonl`, `DONE`, `eval/`, `samples/`) are copied to the local repository (T4.11); checkpoints that later runs depend on (the staged tokenizers) also have a second copy outside scratch (T4.12).
 - Slurm scripts never contain an account, partition or GPU type that was guessed. `#SBATCH` lines cannot expand variables, so the account and partition come from the environment (`SBATCH_ACCOUNT`, `SBATCH_PARTITION`) or the `sbatch` command line.
 
 ## 8. JEPA joint mode (Phase 2) **[DECISION]**: the researcher will revise this after Phase-1 results
@@ -251,7 +255,7 @@ L = 32, V = 64, K = 4 (l = [1, 11, 22, 32]), d = 64, d_code = 16, V_k = 64, d_k 
 
 ### 10.2 Pilots
 
-Every arm is piloted on the code its long run will use before that long run is submitted: generators 300 steps, JEPA 200 steps, evaluated with 32 samples and one seed. A pilot passes when training ends `COMPLETED` inside its wall, writes `DONE` and a metrics record with `train_sec_per_step`, and its eval writes `eval/step_*.json` with a finite Gen PPL for every milestone. A change to the training step (for example TASKS T4.7) keeps a pilot's correctness result but voids its timing; one vq + ce re-pilot then re-measures the step, and the other arms are scaled by their FLOP ratio (docs/PLAN_2026-11-20.md).
+Every arm is piloted on the code its long run will use before that long run is submitted: generators 300 steps, JEPA 200 steps, evaluated with 32 samples and one seed. A pilot passes when training ends `COMPLETED` inside its wall, writes `DONE` and a metrics record with `train_sec_per_step`, and its eval writes `eval/step_*.json` with a finite Gen PPL for every milestone. A change to the training step (for example TASKS T4.7) keeps a pilot's correctness result but voids its timing; one vq + ce re-pilot then re-measures the step, and the other arms are scaled by their FLOP ratio (docs/PLAN_2026-11-20.md). A run counts as trained once its final milestone exists at the expected size; `DONE` is needed for chaining, resume bookkeeping and pilots (v1.7).
 
 ### 10.3 Corruption sweep (F16) and its selection rule
 
@@ -259,6 +263,8 @@ Every arm is piloted on the code its long run will use before that long run is s
 - Each run's final milestone is evaluated with 64 samples and 3 seeds.
 - Selection: among the settings whose H is within 0.15 of the data row (4.03) and whose `pairwise_agree` is below 0.5, take the one with the lowest final Gen PPL; if it does not beat the default (`p_first = 0.8`) by more than twice the larger seed standard deviation of the two, keep 0.8. If no setting qualifies, keep 0.8 and record that in docs/QUESTIONS.md.
 - The chosen `p_first` applies to every full run (ce, flow, regress and JEPA). The `noise` mode is not swept.
+- A sweep arm whose final resume save failed after its final milestone was written is evaluated as normal, and the failure is recorded (10.2; v1.7).
+- An eval task cancelled by the system is rerun alone with the same seed (`--array=<i>`); the other seeds are kept (v1.7).
 
 ### 10.4 Full runs
 
@@ -266,6 +272,7 @@ Every arm is piloted on the code its long run will use before that long run is s
 - Phase 2: G2 = JEPA base (`head: flow`, `target_chain: online`, `ema`, `vicreg` and `decoder_through_E` on).
 - Evaluation: every milestone with 256 samples x 5 seeds (6.1). The final milestone is evaluated again with 1024 samples x 5 seeds, and Table 1 uses those numbers.
 - Gate verdicts come from `scripts/gate_report.py` on the merged eval records.
+- Submission order (v1.7): G0, G1 (flow and regress) and G2 base are submitted together once the packed re-pilot (10.2) has passed and 10.3 has fixed `p_first`; if the queue stalls, the order of priority is G0, G1 flow, G2, G1 regress.
 
 ### 10.5 Gates
 

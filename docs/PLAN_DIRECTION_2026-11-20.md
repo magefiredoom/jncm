@@ -85,7 +85,7 @@ Both running sweep jobs died at 00:06 on a short `torch.save` write: the `/home`
 2. Optional, to shrink the footprint: `latest.pt` and the periodic `step_*.pt` files serve only for resuming (milestones carry no Adam state). After `DONE`, the periodic files of a finished run could go; only the researcher deletes files. Milestones stay: the evals need them.
 3. `scripts/budget.py` gains a disk line (GB per run from the config) so a chain that will not fit is refused before submission (a candidate task, after the move).
 
-## 8. Proposed SPEC v1.7 text (drafted 2026-11-21 for the researcher; not applied)
+## 8. Proposed SPEC v1.7 text (drafted 2026-11-21 for the researcher; applied as SPEC v1.7 on 2026-11-25 at the researcher's request, item 3's 10.3 sentence and item 4 as bullets of 10.3)
 
 The researcher asked to "keep planning our next specs & tasks". SPEC stays untouched until the researcher approves these items; each is short and can be accepted alone.
 
