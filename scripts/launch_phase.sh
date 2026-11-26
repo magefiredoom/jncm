@@ -58,8 +58,9 @@
 # Every eval array is followed by its merge (T4.9, SPEC 6.1): chain.sh
 #   --merge-after submits scripts/slurm/merge.sbatch (1 CPU, no GPU) afterok on
 #   the whole array, which runs python scripts/run_eval.py --run_id <run> --merge.
-#   A failed eval task leaves its merge PENDING (DependencyNeverSatisfied); rerun
-#   the seed alone (SPEC 10.3), then submit merge.sbatch again by hand. Then
+#   A failed eval task leaves its merge PENDING (DependencyNeverSatisfied) or
+#   cancelled (cluster setting kill_invalid_depend); rerun the seed alone (SPEC
+#   10.3), then submit merge.sbatch again by hand. Then
 #   judge the gate with python scripts/gate_report.py.
 
 set -euo pipefail
