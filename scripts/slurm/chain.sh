@@ -3,7 +3,7 @@
 #
 #   scripts/slurm/chain.sh <script> <n_chunks> [--export=ALL,K=V,...]
 #       [--wall=HH:MM:SS] [--gres=gpu:h100:1] [--array=A-B]
-#       [--dependency=<slurm spec>] [--submit]
+#       [--dependency=<slurm spec>] [--merge-after] [--submit]
 #
 # Dry-run by default: it prints the sbatch commands and submits nothing. With
 # --submit, chunk 1 is submitted, chunk i waits for chunk i-1 with
@@ -23,6 +23,13 @@
 # gpu:h100:1 because FIR rejects a generic --gres=gpu:1. --array and
 # --dependency are for eval arrays and for a chain that must wait for another.
 #
+# --merge-after (T4.9, SPEC 6.1): after the last chunk, also submit
+# scripts/slurm/merge.sbatch with --dependency=afterok:<last chunk id> (for an
+# eval array: every task must succeed) and the same --export, which must name
+# RUN_ID. The merge is a CPU job: it gets no --gres, --time or --array (its
+# template sets 1 CPU, 4G, 00:15:00). Its id is printed as MERGE_JOB_ID;
+# CHAIN_LAST_ID stays the last chunk's id.
+#
 # SBATCH_ACCOUNT must be set; the account is never guessed (SPEC 7).
 
 set -euo pipefail
@@ -30,7 +37,7 @@ set -euo pipefail
 usage() {
   echo 'usage: scripts/slurm/chain.sh <script> <n_chunks> [--export=ALL,K=V,...]' >&2
   echo '       [--wall=HH:MM:SS] [--gres=gpu:h100:1] [--array=A-B]' >&2
-  echo '       [--dependency=<slurm spec>] [--submit]' >&2
+  echo '       [--dependency=<slurm spec>] [--merge-after] [--submit]' >&2
 }
 
 die() {
@@ -45,6 +52,8 @@ wall="03:00:00"
 gres="gpu:h100:1"
 array=""
 dependency=""
+merge_after=0
+merge_script="scripts/slurm/merge.sbatch"
 submit=0
 positional=()
 
@@ -55,6 +64,7 @@ while [[ $# -gt 0 ]]; do
     --gres=*) gres="${1#--gres=}" ;;
     --array=*) array="${1#--array=}" ;;
     --dependency=*) dependency="${1#--dependency=}" ;;
+    --merge-after) merge_after=1 ;;
     --submit) submit=1 ;;
     -h | --help)
       usage
@@ -87,6 +97,14 @@ if [[ ! "$wall" =~ ^[0-9]+:[0-9]{2}:[0-9]{2}$ ]]; then
 fi
 if [[ -z "${SBATCH_ACCOUNT:-}" ]]; then
   die "SBATCH_ACCOUNT is unset; run 'source site.env' first (copy site.env.example; never guessed, SPEC 7)"
+fi
+if ((merge_after)); then
+  if [[ ! ",${export_spec}," =~ ,RUN_ID=[^,]+, ]]; then
+    die "--merge-after needs RUN_ID in --export (the merge job merges results/<RUN_ID>/eval)"
+  fi
+  if [[ ! -f "$merge_script" ]]; then
+    die "merge template not found: $merge_script (run from the repo root)"
+  fi
 fi
 
 base_args=(sbatch "--account=${SBATCH_ACCOUNT}" "--gres=${gres}" "--time=${wall}")
@@ -142,7 +160,34 @@ for ((i = 1; i <= chunks; i++)); do
   fi
 done
 
+if ((merge_after)); then
+  # T4.9: the CPU merge waits for the whole last chunk (all array tasks) to succeed.
+  merge_cmd=(sbatch "--account=${SBATCH_ACCOUNT}")
+  if ((submit)); then
+    merge_cmd+=("--dependency=afterok:${prev}")
+  else
+    merge_cmd+=("--dependency=afterok:<JOB_${chunks}>")
+  fi
+  if [[ -n "$export_spec" ]]; then
+    merge_cmd+=("--export=${export_spec}")
+  fi
+  merge_cmd+=("$merge_script")
+  if ((submit)); then
+    out=$("${merge_cmd[@]}")
+    merge_id="${out##* }"
+    if [[ ! "$merge_id" =~ ^[0-9]+$ ]]; then
+      die "could not read a job id from sbatch output: $out"
+    fi
+    echo "Submitted batch job ${merge_id} (merge after ${prev})"
+  else
+    printf '%s\n' "${merge_cmd[*]}"
+  fi
+fi
+
 if ((submit)); then
   echo "CHAIN_JOB_IDS=${job_ids[*]}"
   echo "CHAIN_LAST_ID=${job_ids[$((${#job_ids[@]} - 1))]}"
+  if ((merge_after)); then
+    echo "MERGE_JOB_ID=${merge_id}"
+  fi
 fi

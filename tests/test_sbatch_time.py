@@ -21,7 +21,8 @@ VALID_TIME = re.compile(r"^(\d+-)?\d{1,2}:[0-5]\d:[0-5]\d$")
 
 
 def test_all_templates_are_found() -> None:
-    """The five training and eval templates plus the CPU-only import probe (2026-11-20)."""
+    """The five training and eval templates, the CPU-only import probe (2026-11-20)
+    and the CPU-only merge job (T4.9, 2026-11-25)."""
     names = {path.name for path in TEMPLATES}
 
     assert names == {
@@ -31,6 +32,7 @@ def test_all_templates_are_found() -> None:
         "eval.sbatch",
         "jepa.sbatch",
         "probe_import.sbatch",
+        "merge.sbatch",
     }
 
 

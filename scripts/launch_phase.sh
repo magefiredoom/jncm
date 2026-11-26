@@ -35,7 +35,8 @@
 #
 # Every run ends with a plan line: the number of jobs, the total requested
 #   GPU-hours (chunks x --time x 1 GPU), the micro-batch size of the config in
-#   play and the submission order.
+#   play and the submission order. The CPU merge jobs (T4.9) are counted on a
+#   line of their own and are not part of the GPU-hours.
 #
 # full: a chunk advances in whole resume intervals (generator/JEPA: 10% of the
 #   steps, tokenizer: 5000 steps): intervals_per_chunk = floor(0.9 * wall /
@@ -54,9 +55,12 @@
 #   resume (scripts/slurm/chain.sh). Tokenizer submission is skipped when
 #   results/tok_*_10k/DONE exists, for either config.
 #
-# After the eval arrays finish, merge each run:
-#   python scripts/run_eval.py --run_id <run> --merge
-# then judge the gate with python scripts/gate_report.py.
+# Every eval array is followed by its merge (T4.9, SPEC 6.1): chain.sh
+#   --merge-after submits scripts/slurm/merge.sbatch (1 CPU, no GPU) afterok on
+#   the whole array, which runs python scripts/run_eval.py --run_id <run> --merge.
+#   A failed eval task leaves its merge PENDING (DependencyNeverSatisfied); rerun
+#   the seed alone (SPEC 10.3), then submit merge.sbatch again by hand. Then
+#   judge the gate with python scripts/gate_report.py.
 
 set -euo pipefail
 
@@ -119,6 +123,8 @@ PILOT_TOK_NOISY_RUN="pilot_tok_noisy"
 # T5.6: the plan summary (jobs, GPU-hours, micro-batch, submission order).
 PLAN_CONFIG="configs/tinystories_dev.yaml"
 PLAN_ORDER=()
+# T4.9: CPU merge jobs, one per eval, reported apart from the GPU-hours.
+MERGE_COUNT=0
 
 JEPA_RUNS=(
   jepa_base_dev
@@ -440,6 +446,9 @@ print_plan() {
   done
   hours=$(awk -v j="$jobs" -v w="$WALL_SECONDS" 'BEGIN { printf "%.2f", j * w / 3600 }')
   echo "== plan: ${jobs} job(s), ${hours} requested GPU-hour(s) (1 GPU x ${WALL} each)"
+  if ((MERGE_COUNT > 0)); then
+    echo "   + ${MERGE_COUNT} CPU merge job(s) (scripts/slurm/merge.sbatch, 1 CPU x 00:15:00, afterok on each eval; not in the GPU-hours)"
+  fi
   echo "   $(micro_batch_line "$PLAN_CONFIG")"
   if ((jobs > 0)); then
     echo "   submission order:"
@@ -505,7 +514,9 @@ launch_eval() {
     export_spec+=",N_SAMPLES=${PILOT_N_SAMPLES},N_SEEDS=${PILOT_N_SEEDS}"
     extra=(--array=0-0)
   fi
-  start_chain scripts/slurm/eval.sbatch 1 "$export_spec" "$dep" "${extra[@]}"
+  # T4.9: chain.sh also submits the CPU merge of this run afterok on the array.
+  start_chain scripts/slurm/eval.sbatch 1 "$export_spec" "$dep" "${extra[@]}" --merge-after
+  MERGE_COUNT=$((MERGE_COUNT + 1))
 }
 
 require_checkpoint() {
@@ -649,4 +660,4 @@ case "$PHASE" in
   g2) run_g2 ;;
 esac
 print_plan
-echo "Next: when the jobs finish, merge each run (python scripts/run_eval.py --run_id <run> --merge) and run python scripts/gate_report.py"
+echo "Next: each eval's merge job (scripts/slurm/merge.sbatch) writes eval/step_<n>.json once its array succeeds; then run python scripts/gate_report.py"

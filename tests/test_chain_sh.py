@@ -222,3 +222,96 @@ def test_usage_documents_the_wall_form_the_parser_accepts() -> None:
 
     assert text.count("[--wall=HH:MM:SS]") == 2
     assert "--wall HH:MM:SS" not in text
+
+
+# T4.9: --merge-after submits merge.sbatch afterok on the whole eval array.
+
+
+def _merge_lines(stdout: str) -> list[str]:
+    return [
+        line
+        for line in stdout.splitlines()
+        if line.startswith("sbatch") and "merge.sbatch" in line
+    ]
+
+
+def test_merge_after_dry_run_prints_a_cpu_merge_afterok_on_the_last_chunk() -> None:
+    result = _run(
+        [
+            "scripts/slurm/eval.sbatch",
+            "1",
+            "--export=ALL,RUN_ID=gen_x,HEAD=ce",
+            "--array=0-4",
+            "--dependency=afterany:900",
+            "--merge-after",
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
+    merges = _merge_lines(result.stdout)
+    assert len(commands) == 2 and len(merges) == 1
+    assert commands[1] == merges[0]
+    merge = merges[0]
+    assert "--dependency=afterok:<JOB_1>" in merge
+    assert "afterany" not in merge
+    assert "--export=ALL,RUN_ID=gen_x,HEAD=ce" in merge
+    assert "--account=def-test" in merge
+    for flag in ("--gres", "--time", "--array"):
+        assert flag not in merge, flag
+    assert merge.endswith("scripts/slurm/merge.sbatch")
+    assert "scripts/slurm/eval.sbatch" in commands[0]
+
+
+def test_merge_after_waits_for_the_last_chunk_of_a_longer_chain() -> None:
+    result = _run(
+        ["scripts/slurm/eval.sbatch", "3", "--export=ALL,RUN_ID=gen_x", "--merge-after"]
+    )
+
+    assert result.returncode == 0, result.stderr
+    merges = _merge_lines(result.stdout)
+    assert len(merges) == 1
+    assert "--dependency=afterok:<JOB_3>" in merges[0]
+
+
+def test_merge_after_submit_keeps_chain_last_id_and_prints_the_merge_id(
+    tmp_path: Path,
+) -> None:
+    result, calls = _submit_commands(
+        [
+            "scripts/slurm/eval.sbatch",
+            "1",
+            "--export=ALL,RUN_ID=gen_x",
+            "--array=0-4",
+            "--merge-after",
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
+    assert calls[0].endswith("scripts/slurm/eval.sbatch")
+    assert "--array=0-4" in calls[0]
+    assert calls[1].endswith("scripts/slurm/merge.sbatch")
+    assert "--dependency=afterok:1001" in calls[1]
+    assert "--export=ALL,RUN_ID=gen_x" in calls[1]
+    for flag in ("--gres", "--time", "--array"):
+        assert flag not in calls[1], flag
+    assert "CHAIN_LAST_ID=1001" in result.stdout
+    assert "MERGE_JOB_ID=1002" in result.stdout
+
+
+def test_merge_after_without_run_id_in_the_export_is_refused() -> None:
+    result = _run(["scripts/slurm/eval.sbatch", "1", "--export=ALL,HEAD=ce", "--merge-after"])
+
+    assert result.returncode == 2
+    assert "RUN_ID" in result.stderr
+    assert not [line for line in result.stdout.splitlines() if line.startswith("sbatch")]
+
+
+def test_without_merge_after_no_merge_is_planned() -> None:
+    result = _run(["scripts/slurm/eval.sbatch", "1", "--export=ALL,RUN_ID=gen_x"])
+
+    assert result.returncode == 0, result.stderr
+    assert not _merge_lines(result.stdout)
+    assert "MERGE_JOB_ID" not in result.stdout

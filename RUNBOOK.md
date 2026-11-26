@@ -428,6 +428,22 @@ python scripts/plot_curves.py
 `plot_curves.py` writes `curves.png` at the repo root (`--out <path>` to change
 it) from every `results/**/eval/step_*.json` aggregate.
 
+On FIR the merge is a CPU job, not a login-node command (SPEC 6.1 v1.7, T4.9).
+`launch_phase.sh` and `chain.sh --merge-after` submit
+`scripts/slurm/merge.sbatch` after every eval with `--dependency=afterok:<eval
+array id>` (1 CPU, 4G, 00:15:00, no GPU). For an eval submitted without it (for
+example the E4/E5 evals of 2026-11-21), run the merge by hand from `~/jncm_git`:
+
+```bash
+sbatch --account="$SBATCH_ACCOUNT" --dependency=afterok:<eval array id> \
+       --export=ALL,RUN_ID=gen_vq_ce_dev scripts/slurm/merge.sbatch
+```
+
+If one eval task fails, `afterok` is never satisfied: the merge stays PENDING
+with reason `DependencyNeverSatisfied`, which is expected, not a stuck chain. Rerun
+the lost seed alone (`--array=<i>`, SPEC 10.3). Then `scancel` the stuck merge and
+submit it again, afterok on the rerun.
+
 G0 gate: Gen PPL `<= 20` and H `>= 3.8` (NCM's budget-matched runs landed
 between 15.4 and 19.6).
 

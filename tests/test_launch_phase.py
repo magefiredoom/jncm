@@ -111,7 +111,7 @@ def test_g0_pilot_uses_pilot_ids_steps_and_eval_settings(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     out = result.stdout
     commands = _sbatch_lines(out)
-    assert len(commands) == 3  # tokenizer, generator, eval
+    assert len(commands) == 4  # tokenizer, generator, eval, merge (T4.9)
     assert "pilot_tok_vq" in commands[0]
     assert "STEPS=500" in commands[0]
     assert "--time=00:20:00" in commands[0]
@@ -122,6 +122,9 @@ def test_g0_pilot_uses_pilot_ids_steps_and_eval_settings(tmp_path: Path) -> None
     assert "N_SAMPLES=32,N_SEEDS=1" in commands[2]
     assert "--array=0-0" in commands[2]
     assert "--dependency=afterany:<LAST>" in commands[2]
+    assert commands[3].endswith("scripts/slurm/merge.sbatch")
+    assert "RUN_ID=pilot_gen_vq_ce" in commands[3]
+    assert "--dependency=afterok:<JOB_1>" in commands[3]
     assert "tok_vq_10k" not in out
     assert "gen_vq_ce_dev" not in out
 
@@ -151,7 +154,7 @@ def test_config_is_forwarded_to_every_template(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     commands = _sbatch_lines(result.stdout)
-    assert len(commands) == 3
+    assert len(commands) == 4  # tok, gen, eval and the eval's merge (T4.9)
     assert all(
         "CONFIG=configs/tinystories_lite.yaml" in line for line in commands
     )
@@ -388,12 +391,15 @@ def test_submit_chains_training_then_eval(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 3
+    assert len(calls) == 4  # tok, gen, eval, merge (T4.9)
     assert "--dependency" not in calls[0]
     assert "--dependency=afterany:1001" in calls[1]
     assert "--dependency=afterany:afterany" not in result.stdout
     assert "--dependency=afterany:1002" in calls[2]
     assert "CHAIN_LAST_ID=1003" in result.stdout
+    assert calls[3].endswith("scripts/slurm/merge.sbatch")
+    assert "--dependency=afterok:1003" in calls[3]
+    assert "MERGE_JOB_ID=1004" in result.stdout
 
 
 def test_requires_the_sbatch_account(tmp_path: Path) -> None:
@@ -793,7 +799,7 @@ def test_launch_works_when_none_of_the_leaked_vars_is_set(tmp_path: Path) -> Non
     result = _run(root, ["g0", "pilot"], env)
 
     assert result.returncode == 0, result.stderr
-    assert len(_sbatch_lines(result.stdout)) == 3
+    assert len(_sbatch_lines(result.stdout)) == 4  # tok, gen, eval, merge (T4.9)
 
 
 def test_the_g2_loop_still_exports_sets_internally(tmp_path: Path) -> None:
@@ -845,3 +851,67 @@ def test_usage_documents_the_option_forms_the_parser_accepts() -> None:
 
     assert "[--wall=HH:MM:SS] [--sec_per_step=X]" in text
     assert "--wall HH:MM:SS" not in text
+
+
+# T4.9: every eval the launch kit submits is followed by its CPU merge job.
+
+
+def _merge_lines(stdout: str) -> list[str]:
+    return [line for line in _sbatch_lines(stdout) if "merge.sbatch" in line]
+
+
+def _run_id(line: str) -> str:
+    match = re.search(r"RUN_ID=([^,\s]+)", line)
+    assert match, line
+    return match.group(1)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["g0", "pilot"],
+        ["g1", "pilot"],
+        ["g2", "pilot"],
+        ["g2", "pilot", "--ablations"],
+        ["g0", "full"],
+        ["g1", "full", "--sec_per_step=2.97"],
+    ],
+)
+def test_every_eval_is_followed_by_a_merge_of_the_same_run(
+    tmp_path: Path, args: list[str]
+) -> None:
+    root = _fixture_repo(tmp_path)
+    _seed_pilot(root, "pilot_tok_vq", 1.0)
+    _seed_pilot(root, "pilot_gen_vq_ce", 2.5)
+    if args[1] == "full":
+        # As on FIR: the staged tokenizers are finished, so no tok chain is planned.
+        _done(root, "tok_vq_10k")
+        _done(root, "tok_noisy_10k")
+
+    result = _run(root, args)
+
+    assert result.returncode == 0, result.stderr
+    lines = _sbatch_lines(result.stdout)
+    evals = [i for i, line in enumerate(lines) if "eval.sbatch" in line]
+    merges = _merge_lines(result.stdout)
+    assert evals and len(merges) == len(evals)
+    for i in evals:
+        merge = lines[i + 1]
+        assert merge.endswith("scripts/slurm/merge.sbatch"), merge
+        assert _run_id(merge) == _run_id(lines[i])
+        assert "--dependency=afterok:<JOB_1>" in merge
+        for flag in ("--gres", "--time", "--array"):
+            assert flag not in merge, (flag, merge)
+
+
+def test_plan_counts_merge_jobs_apart_from_gpu_hours(tmp_path: Path) -> None:
+    """The merges run on one CPU, so they are not part of the GPU-hour line."""
+    root = _fixture_repo(tmp_path)
+
+    out = _run(root, ["g1", "pilot"]).stdout
+
+    # pilot tokenizer + 2 generators + 2 evals = 5 GPU jobs x 00:20:00 = 1.67 h;
+    # the two merges are counted on their own line.
+    assert "== plan: 5 job(s), 1.67 requested GPU-hour(s)" in out
+    assert "+ 2 CPU merge job(s) (scripts/slurm/merge.sbatch" in out
+    assert "python scripts/run_eval.py --run_id <run> --merge" not in out
