@@ -439,12 +439,13 @@ sbatch --account="$SBATCH_ACCOUNT" --dependency=afterok:<eval array id> \
        --export=ALL,RUN_ID=gen_vq_ce_dev scripts/slurm/merge.sbatch
 ```
 
-If one eval task fails, `afterok` is never satisfied. Depending on the cluster's
-`kill_invalid_depend` setting (not yet checked on FIR: `scontrol show config | grep
--i kill_invalid`), the merge either stays PENDING with reason
-`DependencyNeverSatisfied` or is cancelled. Either way this is expected, not a
-stuck chain. Rerun the lost seed alone (`--array=<i>`, SPEC 10.3). Then `scancel`
-the stuck merge if it is still pending, and submit it again, afterok on the rerun.
+If one eval task fails, `afterok` is never satisfied, and FIR cancels the merge
+(`scontrol show config` -> `DependencyParameters = kill_invalid_depend`, read
+2026-11-25). A CANCELLED merge after a failed seed is therefore expected, not a
+new fault. Rerun the lost seed alone (`--array=<i>`, SPEC 10.3), then submit the
+merge again with `afterok` on the rerun. The merge waits on the whole array
+(`scontrol show job` shows `Dependency=afterok:<id>_*`). The shards of the seeds
+that succeeded stay in `eval/`, so the merge after the rerun sees all of them.
 
 G0 gate: Gen PPL `<= 20` and H `>= 3.8` (NCM's budget-matched runs landed
 between 15.4 and 19.6).
