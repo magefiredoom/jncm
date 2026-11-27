@@ -82,3 +82,6 @@ NCM (helper summary of arXiv 2610.14162 section 4.4) follows S-FLM and FMLM+, wi
 
 ## Q19 - Is T6.1a in paper 1? (OPEN, the researcher's call)
 T6.1a is eval-only (about 1 H100-h) and would show whether regress's collapse is a level-1 problem (claim C3). It adds a paragraph or a small table to a 4-page paper. Default: yes, if G1 regress is flagged as SPEC 10.5 describes.
+
+## Q20 - Pack the records of a run that has no DONE yet? (OPEN, the researcher's call; T4.11)
+SPEC 7 (v1.7) says a run's small records are copied to the local repository "after a run ends". `scripts/pack_records.sh` also packs a run without `DONE` and prints `absent: DONE (training not finished)`, rather than refusing it. ASSUMPTION (STATE, T4.11): an early copy protects a long chain's records against the scratch purge, and the warning keeps the run's status visible. The cost: a later pack of the same run differs in `metrics.jsonl`, so `unpack_records.py` refuses it until the local copy is moved aside (RUNBOOK 1.3.1). To reverse: make a missing `DONE` exit 2, or allow it only behind a flag.
