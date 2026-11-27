@@ -169,6 +169,12 @@ The 1024 x 5 final evals (SPEC 10.4, `CKPT`) are not submitted yet; each needs i
 
 ## VERIFIED (command + last lines of output)
 
+### PR 1 review fixes M1 and M2 - VERIFIED 2026-11-26 (local CPU, on the PR branch; not merged)
+- Pushed to `claude/project-thread-857uk4` (`77c985b..75d1957`) with the researcher's go-ahead ("Fix M1 and M2"). The work was done in a scratch worktree, so this checkout's `main` was not touched.
+  - `5da26ae` (M1): Figure A accepts the 1024 x 5 final eval and marks it.
+  - `75d1957` (M2): Table 1 footnotes the tokenizer a joint run trains.
+- Details, tests (`21 passed`, six new tests red first) and the real `pilot_jepa_base` row (`100.5M‡`, 108.8M trained): docs/REVIEW_2026-11-26.md "Fixes". The PR still needs the researcher's merge. M3 is TASKS E7b; m1 to m4 are open.
+
 ### T4.11 records pack and unpack - VERIFIED 2026-11-26 (local CPU, Git Bash; not pulled to FIR)
 - Files: `scripts/pack_records.sh` (new, git mode 100755, LF), `scripts/unpack_records.py` (new), `tests/test_records.py` (new), `RUNBOOK.md` 1.3.1.
   - The pack writes `results/_records/<UTC date>.tgz` through a `.tmp` and `mv`, then `<name>.md5` with `md5sum` run inside `_records/` (Git Bash writes ` *name`, Linux writes two spaces; the unpack accepts both). It uses `tar --owner=0 --group=0 --numeric-owner -C results`, so it carries no username and follows the scratch symlink.
