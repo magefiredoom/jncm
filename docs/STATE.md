@@ -169,6 +169,21 @@ The 1024 x 5 final evals (SPEC 10.4, `CKPT`) are not submitted yet; each needs i
 
 ## VERIFIED (command + last lines of output)
 
+### T4.12 second copy of the tokenizers - VERIFIED 2026-11-26 21:40 MST (agent, read-only on FIR, at the researcher's request "for T4.12, verify it then add")
+- The copy was made earlier: commit `478a82f` (21:28 MST, through the `newFir` pane) ticked T4.12 with its md5 sums in TASKS only, and not by this agent. This entry re-checks that copy and records it here, as T4.12's acceptance asks.
+- The channel was proved with `hostname` -> `login2` and an echoed token. `md5sum`, `df` and `realpath` were run with the researcher's approval: they are read-only, but not on AGENTS.md's FIR list.
+- `realpath ~/jncm/keep` -> `/home/$USER/jncm/keep`: `NOT_ON_SCRATCH`, filesystem `/home`, 18% used.
+- The originals are in `~/jncm_git/results` -> `/scratch/$USER/jncm/results`. The keep copies have the same sizes and times (`cp -a`):
+  - `tok_vq_10k/ckpt/latest.pt`: 130,920,073 B, 2026-11-08 21:45:53;
+  - `tok_noisy_10k/ckpt/latest.pt`: 99,344,757 B, 2026-11-09 09:29:01.
+- `md5sum`; each value is the same for the keep copy, the scratch original and the local `D:` copy:
+  | file | `tok_vq_10k` | `tok_noisy_10k` |
+  | --- | --- | --- |
+  | `ckpt/latest.pt` | `b7677506de112a48850820198d7f5a23` | `fd31c57183c740c02be243f00128fd83` |
+  | `config.yaml` | `dec7a19b54b0978e5e742622c5d1bcac` | `e74d9473c14a74a910eceee98db4539a` |
+  | `git_sha.txt` | `ad921d60486366258809553a3db49a4a` | `ad921d60486366258809553a3db49a4a` |
+- Accept ("the md5 sums match"): met.
+
 ### PR 1 review fixes M1 and M2 - VERIFIED 2026-11-26 (local CPU, on the PR branch; not merged)
 - Pushed to `claude/project-thread-857uk4` (`77c985b..75d1957`) with the researcher's go-ahead ("Fix M1 and M2"). The work was done in a scratch worktree, so this checkout's `main` was not touched.
   - `5da26ae` (M1): Figure A accepts the 1024 x 5 final eval and marks it.
