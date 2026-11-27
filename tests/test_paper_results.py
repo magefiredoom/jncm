@@ -28,7 +28,8 @@ def _eval(root: Path, run_id: str, steps: list[int], *, n_samples: int = 256,
             "ppl_mean": ppl0 / index, "ppl_std": 0.5,
             "h_gpt2_mean": 4.0, "h_dataset_mean": 3.9,
             "unique_frac_mean": 1.0, "pairwise_agree_mean": 0.02,
-            "n_params_total": 123_300_000,
+            "n_params_tokenizer": 11_930_000, "n_params_backbone": 85_500_000,
+            "n_params_head": 37_800_000, "n_params_total": 135_230_000,
         }
         if joint:
             record["total_positions_conservative"] = TOK + 2 * positions

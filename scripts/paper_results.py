@@ -102,6 +102,15 @@ def load_arm(results_dir: str | Path, run_id: str) -> list[dict[str, Any]] | Non
         return None
 
 
+def model_params(record: dict[str, Any]) -> int | None:
+    """Backbone + head parameters of an eval record (the frozen tokenizer,
+    which ``n_params_total`` includes, is left out); ``None`` if not logged."""
+    backbone, head = record.get("n_params_backbone"), record.get("n_params_head")
+    if backbone is None or head is None:
+        return None
+    return int(backbone) + int(head)
+
+
 def _num(value: float | None, digits: int, signed: bool = False) -> str:
     if value is None:
         return "n/a"
@@ -157,7 +166,7 @@ def render_table(rows: list[dict[str, Any]], placeholder: bool) -> str:
                          + " - |" * 9)
             continue
         h = point["h_gpt2"]
-        params = point["n_params_total"]
+        params = model_params(row["record"])
         cons = point["total_positions_conservative"]
         lines.append(
             f"| {row['label']}{mark} | `{row['run_id']}` "
@@ -173,8 +182,9 @@ def render_table(rows: list[dict[str, Any]], placeholder: bool) -> str:
     lines.append(f"Data row (real validation text, our pipeline): Gen PPL "
                  f"{REF_PPL:.2f}, H {REF_H:.2f}. PPL is mean ± std over sampling "
                  "seeds, one training seed (SPEC 10.7). Params are backbone + head "
-                 "(`n_params_total` of the eval record). 'Positions (cons.)' charges both objectives of a joint "
-                 "run (SPEC 6.2); staged runs have one count.")
+                 "(`n_params_backbone + n_params_head`; the frozen tokenizer "
+                 "is excluded). 'Positions (cons.)' charges both objectives "
+                 "of a joint run (SPEC 6.2); staged runs have one count.")
     if notes:
         lines.append("")
         lines += notes
