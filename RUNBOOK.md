@@ -337,6 +337,33 @@ bash scripts/pull_results.sh gen_vq_ce_dev      # one run, e.g. once its DONE ex
 `-rt` keeps file times but not owners or permissions, which the exFAT drive cannot store.
 Run it again to resume after an interruption, or to pick up runs that finished later.
 
+#### 1.3.1 Records only (T4.11, SPEC 7): pack on FIR, unpack locally
+
+Scratch is purged, so once a run has `DONE`, copy its small records home. This copies kilobytes,
+not the checkpoints. On FIR, from `~/jncm_git` (bash, tar and md5sum only, so it is fine on a
+login node):
+
+```bash
+bash scripts/pack_records.sh gen_vq_ce_dev gen_noisy_flow_dev   # -> results/_records/<UTC date>.tgz + .md5
+```
+
+Each run contributes `config.yaml`, `git_sha.txt` and `metrics.jsonl` (required), plus `DONE`,
+`eval/` and `samples/` when they exist. The script prints any that are missing. It never packs
+`ckpt/` or `*.tmp`, and stores owners as 0, so the archive carries no username. There is one
+pack per UTC day: an existing archive is never overwritten (copy it home, then move it aside).
+Locally (MFA), from the repo root:
+
+```bash
+bash scripts/pull_results.sh _records                              # WSL, as above
+python scripts/unpack_records.py results/_records/<UTC date>.tgz   # PowerShell or WSL
+```
+
+The unpack checks the `.md5` first, then refuses any member that is not a record (absolute
+paths, `..`, links, `ckpt/`, `*.tmp`). Files that already exist with the same bytes are left
+alone, so running it twice changes nothing. If any local file differs, it lists them and
+writes nothing (exit 2). A pack made while a run was still training differs in
+`metrics.jsonl` from a later one: move the local copy aside and unpack again.
+
 ## 2. Phase 0 — tokenizers (G0a), then vq + ce (G0)
 
 ### 2.1 G0a recap: the two 10,000-step tokenizer runs
