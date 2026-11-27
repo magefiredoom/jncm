@@ -94,6 +94,20 @@ def eval_reason(record: dict[str, Any], n_samples: int) -> str | None:
     return f"eval {samples} x {seeds} (needs {n_samples} x {N_SEEDS})"
 
 
+def curve_eval_reason(record: dict[str, Any]) -> str | None:
+    """Reason text when a curve point has fewer than ``CURVE_SAMPLES`` x 5.
+
+    More samples are fine: the SPEC 10.4 re-evaluation of the final milestone at
+    ``TABLE_SAMPLES`` x 5 writes the same ``eval/step_<n>.json`` and so replaces
+    that milestone's 256-sample record (review 2026-11-26, M1).
+    """
+    samples = int(record.get("n_samples") or 0)
+    seeds = int(record.get("n_seeds") or 0)
+    if samples >= CURVE_SAMPLES and seeds == N_SEEDS:
+        return None
+    return f"eval {samples} x {seeds} (needs at least {CURVE_SAMPLES} x {N_SEEDS})"
+
+
 def load_arm(results_dir: str | Path, run_id: str) -> list[dict[str, Any]] | None:
     """Merged records of one run, ``None`` when the run has none."""
     try:

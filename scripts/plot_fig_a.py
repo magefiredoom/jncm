@@ -8,10 +8,12 @@ one count and appear identically in both panels. Points are the merged milestone
 evals (``results/<run_id>/eval/step_<n>.json``, as in ``gate_report.py``) with
 the std over sampling seeds as a band. The dotted line is our data row (10.80).
 
-Placeholders (rules in ``paper_results.py``; curves need 256 x 5 evals): an arm
-that is a pilot, unfinished or under-sampled is drawn dashed with a dagger in
-its legend, and the figure carries a PLACEHOLDER banner. Missing runs are left
-out and listed on stdout.
+Placeholders (rules in ``paper_results.py``; curves need at least 256 x 5
+evals): an arm that is a pilot, unfinished or under-sampled is drawn dashed with
+a dagger in its legend, and the figure carries a PLACEHOLDER banner. Missing
+runs are left out and listed on stdout. The final milestone's SPEC 10.4
+re-evaluation at 1024 x 5 replaces its 256-sample record (same
+``step_<n>.json``); such a point is final, and is drawn with a hollow square.
 
 Usage:
     python scripts/plot_fig_a.py
@@ -28,6 +30,7 @@ from typing import Any
 import matplotlib
 
 matplotlib.use("Agg")
+from matplotlib.lines import Line2D  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import LogLocator, NullFormatter, ScalarFormatter  # noqa: E402
 
@@ -38,7 +41,7 @@ from scripts.gate_report import ACCOUNTINGS, REF_PPL, curve  # noqa: E402
 from scripts.paper_results import (  # noqa: E402
     CURVE_SAMPLES,
     DAGGER,
-    eval_reason,
+    curve_eval_reason,
     load_arm,
     parse_arms,
     run_reasons,
@@ -63,15 +66,18 @@ def arm_series(results_dir: str | Path,
             series.append({"label": label, "run_id": run_id, "missing": True})
             continue
         reasons = run_reasons(results_dir, run_id, records)
-        small = sorted({r for r in (eval_reason(rec, CURVE_SAMPLES)
-                                    for rec in records) if r})
+        small = sorted({r for r in (curve_eval_reason(rec) for rec in records) if r})
         reasons += small
+        large = {rec.get("step"): int(rec["n_samples"]) for rec in records
+                 if int(rec.get("n_samples") or 0) > CURVE_SAMPLES}
         series.append({
             "label": label,
             "run_id": run_id,
             "missing": False,
             "color": COLORS[index % len(COLORS)],
             "reasons": reasons,
+            "large_steps": set(large),
+            "large_samples": sorted(set(large.values())),
             "curves": {acc: curve(records, acc) for acc in ACCOUNTINGS},
         })
     return series
@@ -96,6 +102,10 @@ def plot(series: list[dict[str, Any]], out_path: str | Path) -> bool:
             ax.plot(xs, ys, style, marker="o", markersize=3, linewidth=1.4,
                     color=s["color"], label=label)
             ax.fill_between(xs, lo, hi, color=s["color"], alpha=0.15, linewidth=0)
+            big = [p for p in points if p["step"] in s["large_steps"]]
+            if big:
+                ax.plot([p["x"] / 1e9 for p in big], [p["ppl"] for p in big], "s",
+                        markersize=6, markerfacecolor="none", color=s["color"])
         ax.axhline(REF_PPL, color="grey", linestyle=":", linewidth=1,
                    label=f"data row ({REF_PPL:.2f})")
         ax.set_yscale("log")
@@ -106,6 +116,12 @@ def plot(series: list[dict[str, Any]], out_path: str | Path) -> bool:
         ax.set_title(TITLES[accounting], fontsize=8)
         ax.grid(True, which="both", alpha=0.25, linewidth=0.5)
         ax.tick_params(labelsize=7)
+    large = sorted({n for s in present for n in s["large_samples"]})
+    if large:
+        sizes = " / ".join(str(n) for n in large)
+        axes[0].add_line(Line2D([], [], marker="s", markersize=6, markerfacecolor="none",
+                                color="black", linestyle="none",
+                                label=f"final eval, {sizes} samples x 5"))
     axes[0].set_ylabel("Gen PPL (GPT-2-large, log)", fontsize=8)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
@@ -137,7 +153,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{s['label']} ({s['run_id']}): PLACEHOLDER: "
                   + "; ".join(s["reasons"]))
         else:
-            print(f"{s['label']} ({s['run_id']}): final")
+            last = s["curves"]["total_positions"][-1]["step"]
+            extra = (f" (last point {', '.join(str(n) for n in s['large_samples'])} x 5)"
+                     if last in s["large_steps"] else "")
+            print(f"{s['label']} ({s['run_id']}): final{extra}")
     print(f"wrote {args.out}{' (PLACEHOLDER)' if placeholder else ''}")
     return 0
 

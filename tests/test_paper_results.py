@@ -109,6 +109,60 @@ def test_fig_a_without_any_run_raises(tmp_path: Path) -> None:
         plot_fig_a.main(["--results", str(tmp_path), "--out", str(tmp_path / "a.png")])
 
 
+def _end_state(root: Path, run_id: str, *, joint: bool = False) -> None:
+    """SPEC 10.4 end state: 256 x 5 at every milestone, then the final milestone
+    re-evaluated at 1024 x 5, which replaces that step's ``step_<n>.json``."""
+    _eval(root, run_id, [1000 * i for i in range(1, 11)], joint=joint, done=True,
+          last_fraction=1.0)
+    final = root / run_id / "eval" / "step_010000.json"
+    record = json.loads(final.read_text(encoding="utf-8"))
+    record["n_samples"] = 1024
+    final.write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_table_and_fig_a_are_both_final_in_the_spec_end_state(tmp_path: Path, capsys) -> None:
+    """Review 2026-11-26 M1: Table 1 needs the 1024 x 5 final eval, and Figure A must
+    accept it, since it replaces the 256-sample record of the final milestone."""
+    _end_state(tmp_path, "gen_vq_ce_dev")
+    arms = [("vq + categorical", "gen_vq_ce_dev")]
+    rows, placeholder = paper_results.table_rows(tmp_path, arms)
+    assert rows[0]["reasons"] == [] and placeholder is False
+    series = plot_fig_a.arm_series(tmp_path, arms)
+    assert series[0]["reasons"] == []
+    assert series[0]["large_steps"] == {10000}
+    out = tmp_path / "a.png"
+    assert plot_fig_a.main(["--results", str(tmp_path), "--out", str(out)]) == 0
+    assert out.stat().st_size > 10_000
+    printed = capsys.readouterr().out
+    assert "gen_vq_ce_dev): final (last point 1024 x 5)" in printed
+
+
+@pytest.mark.parametrize("samples, seeds", [(32, 1), (128, 5), (256, 4)])
+def test_fig_a_still_flags_under_sampled_points(tmp_path: Path, samples: int,
+                                                seeds: int) -> None:
+    _end_state(tmp_path, "gen_vq_ce_dev")
+    path = tmp_path / "gen_vq_ce_dev" / "eval" / "step_003000.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record.update(n_samples=samples, n_seeds=seeds)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    series = plot_fig_a.arm_series(tmp_path, [("vq + categorical", "gen_vq_ce_dev")])
+    assert series[0]["reasons"] == [f"eval {samples} x {seeds} (needs at least 256 x 5)"]
+
+
+def test_fig_a_formats_both_panels(tmp_path: Path, monkeypatch) -> None:
+    """Both panels get the log scale, title and axis label, with and without a
+    1024-sample final point (the legend proxy once broke this loop)."""
+    kept: list = []
+    monkeypatch.setattr(plot_fig_a.plt, "close", kept.append)
+    _end_state(tmp_path, "gen_vq_ce_dev")
+    _eval(tmp_path, "gen_noisy_flow_dev", [1000, 2000], done=True, last_fraction=1.0)
+    titles = [plot_fig_a.TITLES[a] for a in plot_fig_a.ACCOUNTINGS]
+    for arm in (("vq + categorical", "gen_vq_ce_dev"), ("continuous + flow", "gen_noisy_flow_dev")):
+        plot_fig_a.plot(plot_fig_a.arm_series(tmp_path, [arm]), tmp_path / "a.png")
+        axes = kept[-1].axes
+        assert [ax.get_title() for ax in axes] == titles
+        assert all(ax.get_yscale() == "log" and ax.get_xlabel() for ax in axes)
+
 def test_fig_b_reads_last_acc_cum_and_r2_and_lists_unlogged(tmp_path: Path, capsys) -> None:
     _metrics(tmp_path, "tok_vq_10k", [{"step": 1, "acc_cum": [0.0, 0.0]},
                                       {"step": 2, "acc_cum": [0.1, 0.99]}])
