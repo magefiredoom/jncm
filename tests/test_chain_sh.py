@@ -266,6 +266,18 @@ def test_merge_after_dry_run_prints_a_cpu_merge_afterok_on_the_last_chunk() -> N
     assert "scripts/slurm/eval.sbatch" in commands[0]
 
 
+
+def test_merge_after_a_final_eval_carries_final_to_the_merge() -> None:
+    """T4.16: the merge of a FINAL=1 eval merges eval/final/ because it gets the same export."""
+    export = ("--export=ALL,RUN_ID=gen_x,FINAL=1,"
+              "CKPT=results/gen_x/ckpt/milestone_100.pt,N_SAMPLES=1024")
+    result = _run(["scripts/slurm/eval.sbatch", "1", export, "--array=0-4", "--merge-after"])
+
+    assert result.returncode == 0, result.stderr
+    (merge,) = _merge_lines(result.stdout)
+    assert export in merge
+    assert merge.endswith("scripts/slurm/merge.sbatch")
+
 def test_merge_after_waits_for_the_last_chunk_of_a_longer_chain() -> None:
     result = _run(
         ["scripts/slurm/eval.sbatch", "3", "--export=ALL,RUN_ID=gen_x", "--merge-after"]

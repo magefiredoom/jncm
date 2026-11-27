@@ -88,7 +88,7 @@ def _run_eval_sbatch(
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "CKPT", "GPT2_MODEL_PATH", "GPT2_LARGE_PATH", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID"}
+        if key not in {"TOKENIZER", "RUN_ID", "HEAD", "CKPT", "GPT2_MODEL_PATH", "GPT2_LARGE_PATH", "SLURM_SUBMIT_DIR", "SLURM_ARRAY_TASK_ID", "FINAL", "N_SAMPLES"}
     }
     env.update({"SLURM_SUBMIT_DIR": str(root), "RUN_ID": "fake_run"})
     env.update(extra_env)
@@ -233,3 +233,60 @@ def test_a_missing_ckpt_is_rejected_before_anything_runs(tmp_path: Path) -> None
     assert result.returncode == 2
     assert "CKPT" in result.stderr
     assert "PYTHON_ARGS" not in result.stdout
+
+
+def _final_env(root: Path, **extra: str) -> dict[str, str]:
+    (root / "results" / "fake_run" / "ckpt" / "milestone_100.pt").write_bytes(b"")
+    return {"FINAL": "1", "CKPT": "results/fake_run/ckpt/milestone_100.pt", **extra}
+
+
+def test_final_passes_final_and_defaults_to_1024_samples(tmp_path: Path) -> None:
+    """T4.16: FINAL=1 writes the SPEC 10.4 final eval into eval/final/ (run_eval --final)."""
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, _final_env(root))
+
+    assert result.returncode == 0, result.stderr
+    assert " --final" in result.stdout
+    assert "--n_samples 1024" in result.stdout
+    assert "--ckpt results/fake_run/ckpt/milestone_100.pt" in result.stdout
+
+
+def test_final_keeps_an_explicit_n_samples(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, _final_env(root, N_SAMPLES="2048"))
+
+    assert result.returncode == 0, result.stderr
+    assert "--n_samples 2048" in result.stdout
+
+
+def test_final_without_ckpt_is_rejected_before_anything_runs(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"FINAL": "1"})
+
+    assert result.returncode == 2
+    assert "FINAL" in result.stderr and "CKPT" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout
+
+
+@pytest.mark.parametrize("value", ["yes", "2", "true"])
+def test_final_accepts_only_0_or_1(tmp_path: Path, value: str) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, _final_env(root, FINAL=value))
+
+    assert result.returncode == 2
+    assert "FINAL" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout
+
+
+def test_without_final_no_final_flag_and_256_samples(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_eval_sbatch(root, {"FINAL": "0"})
+
+    assert result.returncode == 0, result.stderr
+    assert "--final" not in result.stdout
+    assert "--n_samples 256" in result.stdout

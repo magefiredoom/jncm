@@ -24,10 +24,20 @@ per-seed shard (``step_<n>.seed_<i>.json``) is written for every seed so a Slurm
 seed array can run in parallel; ``--merge`` folds the shards of each step into
 its aggregate file without rescoring.
 
+``--final`` (T4.16) writes the SPEC 10.4 final eval (the final milestone again,
+1024 samples x 5 seeds) into ``results/<run_id>/eval/final/`` instead, so the
+256-sample record of the same step survives; ``--merge --final`` merges only that
+folder. Without ``--final`` an eval refuses to replace a record of another sample
+count, and a merge refuses a step whose shards mix sample counts.
+
 Usage:
     python scripts/run_eval.py --run_id gen_vq_ce_dev \\
         --tokenizer results/tok_vq_dev/ckpt/latest.pt
     python scripts/run_eval.py --run_id gen_vq_ce_dev --merge
+    python scripts/run_eval.py --run_id gen_vq_ce_dev --final --n_samples 1024 \\
+        --tokenizer results/tok_vq_dev/ckpt/latest.pt \\
+        --ckpt results/gen_vq_ce_dev/ckpt/milestone_100.pt
+    python scripts/run_eval.py --run_id gen_vq_ce_dev --merge --final
 """
 
 from __future__ import annotations
@@ -69,6 +79,7 @@ from jncm.train_generator import (
 from jncm.utils import parameter_counts, resolve_device, seed_everything
 
 SHARD_RE = re.compile(r"^step_\d{6}\.seed_\d+\.json$")
+FINAL_DIR = "final"  # T4.16: results/<run_id>/eval/final/ holds the SPEC 10.4 final eval
 METRIC_KEYS = ("ppl", "h_gpt2", "h_dataset", "unique_frac", "pairwise_agree")
 META_KEYS = (
     "run_id",
@@ -366,8 +377,33 @@ def _write_json(path: Path, record: dict[str, Any]) -> None:
         handle.write("\n")
 
 
+def refuse_other_sample_count(
+    eval_dir: Path, step: int, seeds: list[int], n_samples: int
+) -> None:
+    """Refuse, before any scoring, to replace a record of another sample count (T4.16).
+
+    Re-evaluating the final milestone at 1024 samples into ``eval/`` would overwrite
+    its 256-sample shards (review 2026-11-26, M1); that eval belongs in ``eval/final/``.
+    """
+    names = [f"step_{step:06d}.seed_{seed}.json" for seed in seeds]
+    for path in [eval_dir / name for name in names] + [eval_dir / f"step_{step:06d}.json"]:
+        if not path.is_file():
+            continue
+        old = json.loads(path.read_text(encoding="utf-8")).get("n_samples")
+        if old is not None and int(old) != int(n_samples):
+            raise ValueError(
+                f"{path} holds a {int(old)}-sample record and this eval draws {n_samples}; "
+                "refusing to replace it. The SPEC 10.4 final eval goes to eval/final/ "
+                "(run_eval.py --final, eval.sbatch FINAL=1)."
+            )
+
+
 def merge_shards(eval_dir: str | Path) -> list[Path]:
-    """Fold ``step_<n>.seed_<i>.json`` shards into ``step_<n>.json`` files."""
+    """Fold ``step_<n>.seed_<i>.json`` shards into ``step_<n>.json`` files.
+
+    Raises ``ValueError``, before writing anything, when a step's shards mix
+    ``n_samples`` (T4.16) or miss a seed.
+    """
     directory = Path(eval_dir)
     groups: dict[str, list[dict[str, Any]]] = {}
     for path in sorted(directory.glob("step_*.seed_*.json")):
@@ -378,6 +414,13 @@ def merge_shards(eval_dir: str | Path) -> list[Path]:
         groups.setdefault(key, []).append(record)
     if not groups:
         raise ValueError(f"no per-seed eval shards found under {directory}")
+    for key, records in sorted(groups.items()):
+        counts = sorted({int(record.get("n_samples") or 0) for record in records})
+        if len(counts) > 1:
+            raise ValueError(
+                f"{directory / key}: the shards mix n_samples {counts}; nothing was merged. "
+                "The SPEC 10.4 final eval belongs in eval/final/ (run_eval.py --final)."
+            )
 
     written: list[Path] = []
     for key in sorted(groups):
@@ -408,13 +451,22 @@ def run_eval(
     scorer: Any = None,
     gpt2_tokenizer: Any = None,
     device: str | torch.device = "cpu",
+    final: bool = False,
 ) -> list[Path]:
-    """Evaluate milestone checkpoints and write the eval JSON files."""
+    """Evaluate milestone checkpoints and write the eval JSON files.
+
+    ``final=True`` (T4.16) writes into ``eval/final/`` and needs ``ckpt_paths``.
+    """
     if n_samples < 1:
         raise ValueError(f"n_samples must be >= 1, got {n_samples}")
+    if final and ckpt_paths is None:
+        raise ValueError(
+            "--final evaluates the checkpoints given with --ckpt (SPEC 10.4: the final "
+            "milestone, e.g. results/<run_id>/ckpt/milestone_100.pt); pass --ckpt"
+        )
     seed_everything(cfg.seed)
     run_dir = Path(results_dir) / run_id
-    eval_dir = run_dir / "eval"
+    eval_dir = run_dir / "eval" / FINAL_DIR if final else run_dir / "eval"
     eval_dir.mkdir(parents=True, exist_ok=True)
     device_obj = torch.device(device)
 
@@ -437,6 +489,7 @@ def run_eval(
     for checkpoint in ckpts:
         state = torch.load(checkpoint, map_location="cpu")
         model_cfg = resolve_checkpoint_config(cfg, state, Path(checkpoint))
+        refuse_other_sample_count(eval_dir, int(state["step"]) + 1, seed_list, n_samples)
         if is_joint_checkpoint(state):
             tokenizer = tokenizer_from_joint_checkpoint(state, model_cfg)
         else:
@@ -557,11 +610,20 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Fold per-seed shards into step_<n>.json without rescoring",
     )
+    parser.add_argument(
+        "--final",
+        action="store_true",
+        help=(
+            "SPEC 10.4 final eval (T4.16): write to, or with --merge merge only, "
+            "eval/final/; needs --ckpt when scoring"
+        ),
+    )
     args = parser.parse_args(argv)
 
     run_dir = Path(args.results) / args.run_id
+    eval_dir = run_dir / "eval" / FINAL_DIR if args.final else run_dir / "eval"
     if args.merge:
-        for path in merge_shards(run_dir / "eval"):
+        for path in merge_shards(eval_dir):
             print(f"wrote {path}")
         return
 
@@ -586,8 +648,9 @@ def main(argv: list[str] | None = None) -> None:
         scorer=scorer,
         gpt2_tokenizer=scorer.tokenizer,
         device=args.device,
+        final=args.final,
     )
-    print(f"wrote {len(paths)} eval records under {run_dir / 'eval'}")
+    print(f"wrote {len(paths)} eval records under {eval_dir}")
 
 
 if __name__ == "__main__":

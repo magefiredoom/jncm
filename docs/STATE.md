@@ -174,11 +174,25 @@ The poller was stopped first. `git push` (`ab7ebd2..3c24d59`). FIR `~/jncm_git`:
 | 6262192 | `gen_noisy_regress_dev` merge | - | 00:15:00 | `Dependency=afterok:5088625_*` | PENDING |
 | 6262193 | `jepa_base_dev` merge | - | 00:15:00 | `Dependency=afterok:5088659_*` | PENDING |
 
-The 1024 x 5 final evals (SPEC 10.4, `CKPT`) are not submitted yet; each needs its own merge afterok on it, and because its shards share the `step_<n>.seed_<i>.json` names of the 256-sample final milestone, it must start only after the 256-sample merge of that run has finished.
+The 1024 x 5 final evals (SPEC 10.4, `CKPT`) are not submitted yet. Each needs its own merge afterok on it.
+- With the code FIR has today (`3c24d59`), its shards share the `step_<n>.seed_<i>.json` names of the 256-sample final milestone, so it would overwrite them. T4.16 (local, 2026-11-26) gives it `eval/final/` (`FINAL=1`; RUNBOOK §2.2), which removes the ordering constraint, but only once FIR is pulled after the E4/E5 chains end (pull rule).
+- Until then, submit no 1024-sample eval.
 
 **Polls 2026-11-25 23:12 to 2026-11-26 19:28 MST (agent, read-only, `newFir` pane `terminal_0`):** no state change. All 15 chain jobs and the 4 merges were PENDING at every poll (last ones 10:22 and 19:28 on 11-26). There was no poll from 03:08 to 08:22 (the PC slept). Between 10:22 and 11:40 the SSH session in the pane dropped (the pane showed the local Windows prompt) and the D: drive holding this repo went offline. The researcher reconnected both (MFA) before 19:27. The channel was proved again at 19:27 (`hostname` -> `login2`, echoed token). From then on, the four chain heads 5086495 (G0), 5088619 (flow), 5088622 (regress) and 5088657 (JEPA) show `ReqNodeNotAvail, UnavailableNodes:fc[10520,10611,10618]` in place of `Priority`. The poller does not log reasons, so the time of the change is unknown. The other 15 jobs show `Dependency`. Repo after the outage: tree clean and `git diff --stat origin/main HEAD` reads all 4 unpushed commits (11 files). Finding in the agent's own poller (a scratchpad script, nothing tracked): from 23:12 on 11-25 two copies ran, because the 15-job copy was not stopped when the 19-job copy started, so FIR was polled every 10 min, not 20. Its check for a local prompt also had a regex bug, so it woke after 30 min of "pane busy" checks, not at once. Both are fixed: a pid lock now refuses a second copy, and the pattern was tested against a local `C:\...>` prompt and the FIR prompt. A single poller runs again from 19:28 at a 20-minute interval.
 
 ## VERIFIED (command + last lines of output)
+
+### T4.16 own folder for the 1024 x 5 final eval - VERIFIED 2026-11-26 (local CPU; not pulled to FIR, pull rule)
+- Files:
+  - `scripts/run_eval.py`: `--final` writes to, and with `--merge` merges only, `eval/final/`, and needs `--ckpt`. Without the flag, `refuse_other_sample_count` refuses before scoring to replace a record of another sample count, and `merge_shards` refuses a step whose shards mix `n_samples`, writing nothing.
+  - `scripts/slurm/eval.sbatch`: `FINAL` must be 0 or 1. `FINAL=1` needs `CKPT`, defaults `N_SAMPLES` to 1024 and passes `--final`.
+  - `scripts/slurm/merge.sbatch`: `FINAL=1` adds `--final` and checks that `eval/final/` exists.
+  - `scripts/paper_results.py`: Table 1 takes every column from `eval/final/`, or falls back to the last `eval/` record with a dagger whose reason names `eval/final/`.
+  - Tests: `tests/test_final_eval.py` (new) and the FINAL tests in `test_eval_sbatch.py`, `test_merge_sbatch.py` and `test_chain_sh.py`. `test_paper_results.py` moved to the new layout, keeping a legacy test for Figure A. `test_records.py` round-trips `eval/final/`.
+  - Docs: RUNBOOK §2.2 has the final-eval command.
+- Red first: 19 failed, 80 passed. Green: the related files `225 passed`; full suite `586 passed, 1 skipped, 5 deselected in 681.17s`.
+- Real CLI on CPU, real GPT-2 large, pilot `milestone_100.pt`, scratch results dir: `run_eval.py --final --n_samples 2 --n_seeds 1 --seeds 0` -> `wrote 2 eval records under ...\evalinal`, then `--merge --final` -> `eval/final/step_000300.json` (`n_samples 2`, `fraction 1.0`), in 25 s.
+- `run_eval.py` is 657 lines, over AGENTS' 400-line guide; it was already 594.
 
 ### T4.12 second copy of the tokenizers - VERIFIED 2026-11-26 21:40 MST (agent, read-only on FIR, at the researcher's request "for T4.12, verify it then add")
 - The copy was made earlier: commit `478a82f` (21:28 MST, through the `newFir` pane) ticked T4.12 with its md5 sums in TASKS only, and not by this agent. This entry re-checks that copy and records it here, as T4.12's acceptance asks.

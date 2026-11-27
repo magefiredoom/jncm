@@ -107,7 +107,7 @@ def _run_merge(root: Path, extra_env: dict[str, str]) -> subprocess.CompletedPro
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"RUN_ID", "SLURM_SUBMIT_DIR"}
+        if key not in {"RUN_ID", "SLURM_SUBMIT_DIR", "FINAL"}
     }
     env["SLURM_SUBMIT_DIR"] = str(root)
     env["PATH"] = str(root.parent / "bin") + os.pathsep + env.get("PATH", "")
@@ -163,4 +163,39 @@ def test_merge_of_a_run_without_eval_shards_directory_fails_loudly(
 
     assert result.returncode == 1
     assert "results/no_such_run/eval" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout
+
+
+@needs_bash
+def test_final_merge_runs_run_eval_merge_final(tmp_path: Path) -> None:
+    """T4.16: chain.sh --merge-after gives the merge the eval's export, FINAL=1 included."""
+    root = _fixture_repo(tmp_path)
+    (root / "results" / "fake_run" / "eval" / "final").mkdir()
+
+    result = _run_merge(root, {"RUN_ID": "fake_run", "FINAL": "1"})
+
+    assert result.returncode == 0, result.stderr
+    calls = [line for line in result.stdout.splitlines() if line.startswith("PYTHON_ARGS")]
+    assert calls == ["PYTHON_ARGS scripts/run_eval.py --run_id fake_run --merge --final"]
+
+
+@needs_bash
+def test_final_merge_without_eval_final_fails_loudly(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_merge(root, {"RUN_ID": "fake_run", "FINAL": "1"})
+
+    assert result.returncode == 1
+    assert "results/fake_run/eval/final" in result.stderr
+    assert "PYTHON_ARGS" not in result.stdout
+
+
+@needs_bash
+def test_merge_rejects_a_final_value_other_than_0_or_1(tmp_path: Path) -> None:
+    root = _fixture_repo(tmp_path)
+
+    result = _run_merge(root, {"RUN_ID": "fake_run", "FINAL": "yes"})
+
+    assert result.returncode == 2
+    assert "FINAL" in result.stderr
     assert "PYTHON_ARGS" not in result.stdout

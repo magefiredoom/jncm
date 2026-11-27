@@ -57,9 +57,20 @@ def test_parse_arms_overrides_by_label_and_rejects_bad_specs() -> None:
         paper_results.parse_arms(["no_equals"])
 
 
+def _final(root: Path, run_id: str, n_samples: int = 1024) -> None:
+    """T4.16 layout: the SPEC 10.4 final eval in eval/final/, a copy of the last
+    milestone record re-evaluated at ``n_samples`` x 5."""
+    last = sorted((root / run_id / "eval").glob("step_*.json"))[-1]
+    record = json.loads(last.read_text(encoding="utf-8"))
+    record["n_samples"] = n_samples
+    final = root / run_id / "eval" / "final" / last.name
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_text(json.dumps(record), encoding="utf-8")
+
+
 def test_table_final_row_has_no_dagger(tmp_path: Path) -> None:
-    _eval(tmp_path, "gen_vq_ce_dev", [1000, 2000], n_samples=1024, done=True,
-          last_fraction=1.0)
+    _eval(tmp_path, "gen_vq_ce_dev", [1000, 2000], done=True, last_fraction=1.0)
+    _final(tmp_path, "gen_vq_ce_dev")
     rows, placeholder = paper_results.table_rows(
         tmp_path, [("vq + categorical", "gen_vq_ce_dev")])
     assert rows[0]["reasons"] == [] and placeholder is False
@@ -110,10 +121,17 @@ def test_fig_a_without_any_run_raises(tmp_path: Path) -> None:
 
 
 def _end_state(root: Path, run_id: str, *, joint: bool = False) -> None:
-    """SPEC 10.4 end state: 256 x 5 at every milestone, then the final milestone
-    re-evaluated at 1024 x 5, which replaces that step's ``step_<n>.json``."""
+    """SPEC 10.4 end state (T4.16 layout): 256 x 5 at every milestone in eval/, and
+    the final milestone re-evaluated at 1024 x 5 in eval/final/."""
     _eval(root, run_id, [1000 * i for i in range(1, 11)], joint=joint, done=True,
           last_fraction=1.0)
+    _final(root, run_id)
+
+
+def _legacy_end_state(root: Path, run_id: str) -> None:
+    """Pre-T4.16 layout: the 1024 x 5 final eval replaced the final milestone's
+    ``eval/step_<n>.json`` (review 2026-11-26, M1)."""
+    _eval(root, run_id, [1000 * i for i in range(1, 11)], done=True, last_fraction=1.0)
     final = root / run_id / "eval" / "step_010000.json"
     record = json.loads(final.read_text(encoding="utf-8"))
     record["n_samples"] = 1024
@@ -121,7 +139,7 @@ def _end_state(root: Path, run_id: str, *, joint: bool = False) -> None:
 
 
 def _set_params(root: Path, run_id: str, **counts: int) -> None:
-    for path in (root / run_id / "eval").glob("step_*.json"):
+    for path in (root / run_id / "eval").rglob("step_*.json"):
         record = json.loads(path.read_text(encoding="utf-8"))
         for key in ("n_params_tokenizer", "n_params_backbone", "n_params_head",
                     "n_params_total"):
@@ -131,20 +149,30 @@ def _set_params(root: Path, run_id: str, **counts: int) -> None:
 
 
 def test_table_and_fig_a_are_both_final_in_the_spec_end_state(tmp_path: Path, capsys) -> None:
-    """Review 2026-11-26 M1: Table 1 needs the 1024 x 5 final eval, and Figure A must
-    accept it, since it replaces the 256-sample record of the final milestone."""
+    """Review 2026-11-26 M1 and T4.16: with the 1024 x 5 final eval in eval/final/,
+    Table 1 and Figure A are final in the same state."""
     _end_state(tmp_path, "gen_vq_ce_dev")
     arms = [("vq + categorical", "gen_vq_ce_dev")]
     rows, placeholder = paper_results.table_rows(tmp_path, arms)
     assert rows[0]["reasons"] == [] and placeholder is False
     series = plot_fig_a.arm_series(tmp_path, arms)
     assert series[0]["reasons"] == []
-    assert series[0]["large_steps"] == {10000}
+    assert series[0]["large_steps"] == set()
     out = tmp_path / "a.png"
     assert plot_fig_a.main(["--results", str(tmp_path), "--out", str(out)]) == 0
     assert out.stat().st_size > 10_000
     printed = capsys.readouterr().out
-    assert "gen_vq_ce_dev): final (last point 1024 x 5)" in printed
+    assert "gen_vq_ce_dev): final\n" in printed
+
+
+def test_fig_a_accepts_a_legacy_1024_final_point(tmp_path: Path, capsys) -> None:
+    """Review 2026-11-26 M1, kept for records written before T4.16."""
+    _legacy_end_state(tmp_path, "gen_vq_ce_dev")
+    series = plot_fig_a.arm_series(tmp_path, [("vq + categorical", "gen_vq_ce_dev")])
+    assert series[0]["reasons"] == []
+    assert series[0]["large_steps"] == {10000}
+    assert plot_fig_a.main(["--results", str(tmp_path), "--out", str(tmp_path / "a.png")]) == 0
+    assert "gen_vq_ce_dev): final (last point 1024 x 5)" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("samples, seeds", [(32, 1), (128, 5), (256, 4)])
@@ -164,7 +192,7 @@ def test_fig_a_formats_both_panels(tmp_path: Path, monkeypatch) -> None:
     1024-sample final point (the legend proxy once broke this loop)."""
     kept: list = []
     monkeypatch.setattr(plot_fig_a.plt, "close", kept.append)
-    _end_state(tmp_path, "gen_vq_ce_dev")
+    _legacy_end_state(tmp_path, "gen_vq_ce_dev")
     _eval(tmp_path, "gen_noisy_flow_dev", [1000, 2000], done=True, last_fraction=1.0)
     titles = [plot_fig_a.TITLES[a] for a in plot_fig_a.ACCOUNTINGS]
     for arm in (("vq + categorical", "gen_vq_ce_dev"), ("continuous + flow", "gen_noisy_flow_dev")):

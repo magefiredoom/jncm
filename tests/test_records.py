@@ -63,6 +63,7 @@ def _make_run(
     if evals:
         files["eval/step_000002.json"] = b'{"gen_ppl": 12.5}\n'
         files["eval/step_000002.seed_0.json"] = b'{"gen_ppl": 12.4}\n'
+        files["eval/final/step_000002.json"] = b'{"gen_ppl": 12.1}\n'  # T4.16
     if samples:
         files["samples/step_000002.txt"] = bytes(range(256))  # not UTF-8
     for rel, data in files.items():

@@ -18,7 +18,9 @@
 #
 # It runs `python scripts/run_eval.py --run_id "$RUN_ID" --merge`, which folds
 # results/<RUN_ID>/eval/step_<n>.seed_<i>.json into step_<n>.json without
-# rescoring (no GPT-2, no checkpoint). Resources: 1 CPU and 4 GB cover
+# rescoring (no GPT-2, no checkpoint). With FINAL=1 (T4.16; chain.sh --merge-after
+# copies it from the eval's --export) it adds --final and merges only
+# results/<RUN_ID>/eval/final/, the SPEC 10.4 final eval. FINAL is 0 or 1. Resources: 1 CPU and 4 GB cover
 # `import torch` (about 230 MB on FIR) and the JSON shards; 15 minutes cover the
 # cold torch import from the cluster filesystem (about 93 s measured on FIR).
 #
@@ -37,8 +39,17 @@ if [[ ! -f scripts/run_eval.py ]]; then
   echo "ERROR: scripts/run_eval.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
 fi
+final="${FINAL:-0}"
+if [[ "${final}" != 0 && "${final}" != 1 ]]; then
+  echo "ERROR: FINAL must be 0 or 1, got '${FINAL}'" >&2
+  exit 2
+fi
 if [[ ! -d "results/${RUN_ID}/eval" ]]; then
   echo "ERROR: results/${RUN_ID}/eval not found; run the eval array first (eval.sbatch)" >&2
+  exit 1
+fi
+if [[ "${final}" == 1 && ! -d "results/${RUN_ID}/eval/final" ]]; then
+  echo "ERROR: results/${RUN_ID}/eval/final not found; run the final eval first (eval.sbatch FINAL=1)" >&2
   exit 1
 fi
 
@@ -54,5 +65,8 @@ source .venv/bin/activate
 export PYTHONUNBUFFERED=1
 
 cmd=(python scripts/run_eval.py --run_id "${RUN_ID}" --merge)
+if [[ "${final}" == 1 ]]; then
+  cmd+=(--final)
+fi
 echo "Running: ${cmd[*]}"
 "${cmd[@]}"

@@ -474,6 +474,26 @@ merge again with `afterok` on the rerun. The merge waits on the whole array
 (`scontrol show job` shows `Dependency=afterok:<id>_*`). The shards of the seeds
 that succeeded stay in `eval/`, so the merge after the rerun sees all of them.
 
+**Final eval (SPEC 10.4, T4.16).** Table 1 uses the final milestone evaluated again with
+1024 samples x 5 seeds. `FINAL=1` writes it to `eval/final/` (`run_eval.py --final`), so the
+256-sample record of the same step stays in `eval/` for the curves and the gates. Because the
+two use different folders, the final eval need not wait for the 256-sample merge.
+`chain.sh --merge-after` passes `FINAL=1` on to the merge, which then merges `eval/final/`
+only (`run_eval.py --merge --final`). `N_SAMPLES` defaults to 1024 under `FINAL=1`; `CKPT`
+is required. Add `HEAD`, `TOKENIZER` or `CONFIG` as for the run's 256-sample eval. A dry run
+first, as always:
+
+```bash
+bash scripts/slurm/chain.sh scripts/slurm/eval.sbatch 1 \
+  --export=ALL,RUN_ID=gen_vq_ce_dev,FINAL=1,CKPT=results/gen_vq_ce_dev/ckpt/milestone_100.pt,TOKENIZER=results/tok_vq_10k/ckpt/latest.pt \
+  --array=0-4 --merge-after
+```
+
+Without `FINAL=1`, an eval at another sample count refuses to replace a step's 256-sample
+shards, and a merge refuses a step whose shards mix sample counts. This needs the T4.16 code
+on FIR. Until it is pulled (the pull rule holds `run_eval.py` and the templates while the
+E4/E5 chains run), do not submit a 1024-sample eval.
+
 G0 gate: Gen PPL `<= 20` and H `>= 3.8` (NCM's budget-matched runs landed
 between 15.4 and 19.6).
 

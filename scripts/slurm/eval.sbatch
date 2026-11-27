@@ -50,9 +50,14 @@
 # HEAD (ce, regress or flow) is required for a staged flow or regress run (G1):
 # the YAMLs say ce/vq and run_eval.py refuses a checkpoint whose head differs.
 # Leave it unset for ce runs and for joint JEPA checkpoints.
-# CKPT (optional) evaluates that one checkpoint instead of every milestone, e.g.
-# the final eval of SPEC 10.4 (v1.6): --array=0-4 with N_SAMPLES=1024 and
-# CKPT=results/<RUN_ID>/ckpt/milestone_100.pt. A missing file exits 2.
+# CKPT (optional) evaluates that one checkpoint instead of every milestone. A
+# missing file exits 2.
+# FINAL=1 (T4.16) is the final eval of SPEC 10.4: the final milestone again with
+# 1024 samples x 5 seeds (N_SAMPLES defaults to 1024 under FINAL=1), written to
+# results/<RUN_ID>/eval/final/ (run_eval.py --final), so the 256-sample record of
+# the same step survives. It needs CKPT=results/<RUN_ID>/ckpt/milestone_100.pt,
+# and can run before the 256-sample merge. chain.sh --merge-after passes FINAL=1
+# on to merge.sbatch, which then merges eval/final/ only. FINAL is 0 or 1.
 #
 # Account and partition are deliberately absent from this file (SPEC 7): Slurm
 # does not expand shell variables in #SBATCH lines, so they come from the sbatch
@@ -86,6 +91,15 @@ if [[ -n "${CKPT:-}" && ! -f "${CKPT}" ]]; then
   echo "ERROR: CKPT ${CKPT} not found (one checkpoint file, relative to the repo root)" >&2
   exit 2
 fi
+final="${FINAL:-0}"
+if [[ "${final}" != 0 && "${final}" != 1 ]]; then
+  echo "ERROR: FINAL must be 0 or 1, got '${FINAL}'" >&2
+  exit 2
+fi
+if [[ "${final}" == 1 && -z "${CKPT:-}" ]]; then
+  echo "ERROR: FINAL=1 needs CKPT, the final milestone (SPEC 10.4), e.g. CKPT=results/${RUN_ID}/ckpt/milestone_100.pt" >&2
+  exit 2
+fi
 if [[ ! -f scripts/run_eval.py ]]; then
   echo "ERROR: scripts/run_eval.py not found in ${PWD}; submit from the repo root" >&2
   exit 1
@@ -116,7 +130,11 @@ export PYTHONUNBUFFERED=1
 export JNCM_REQUIRE_CUDA=1
 
 n_seeds="${N_SEEDS:-5}"
-n_samples="${N_SAMPLES:-256}"
+if [[ "${final}" == 1 ]]; then
+  n_samples="${N_SAMPLES:-1024}"
+else
+  n_samples="${N_SAMPLES:-256}"
+fi
 gpt2="${GPT2_MODEL_PATH:-${GPT2_LARGE_PATH:-models/gpt2-large}}"
 seed="${SLURM_ARRAY_TASK_ID:-0}"
 
@@ -133,6 +151,9 @@ if [[ -n "${HEAD:-}" ]]; then
 fi
 if [[ -n "${CKPT:-}" ]]; then
   cmd+=(--ckpt "${CKPT}")
+fi
+if [[ "${final}" == 1 ]]; then
+  cmd+=(--final)
 fi
 cmd+=(
   --seeds "${seed}"

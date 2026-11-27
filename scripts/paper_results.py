@@ -2,9 +2,12 @@
 """Table 1 of paper section 4.3 (TASKS E7), plus the arm list and placeholder
 rules shared with ``plot_fig_a.py`` and ``plot_fig_b.py``.
 
-Reads the merged eval aggregates that ``scripts/gate_report.py`` reads
-(``results/<run_id>/eval/step_<n>.json``; per-seed shards ignored) and takes
-each arm's last record by position. Every number comes from those files.
+Table 1 reads each arm's SPEC 10.4 final eval, the merged aggregate in
+``results/<run_id>/eval/final/step_<n>.json`` (T4.16; written by
+``run_eval.py --final``, ``eval.sbatch`` with ``FINAL=1``), and takes every column
+from it. Without one, the row falls back to the last 256-sample record in
+``eval/`` (the files ``scripts/gate_report.py`` and Figure A read) and is daggered.
+Every number comes from those files.
 
 Placeholders: until the main runs finish, an arm can point at a pilot or a
 partly trained run (``--arm "label=run_id"``). Its row is then marked with a
@@ -12,9 +15,8 @@ dagger and the reasons are printed under the table:
   - the run id starts with ``pilot_`` or ``corr_`` (a pilot or sweep run);
   - ``results/<run_id>/DONE`` is missing (training not finished);
   - the last milestone is below 100%;
-  - the final eval is not 1024 samples x 5 seeds (SPEC 10.4: Table 1 uses the
-    1024-sample re-evaluation; ASSUMPTION: it is read from the same
-    ``eval/step_<n>.json`` and told apart by its ``n_samples``).
+  - there is no merged final eval in ``eval/final/``;
+  - the record used is not 1024 samples x 5 seeds (SPEC 10.4).
 A missing run gets a row with no numbers.
 
 Usage:
@@ -26,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -33,7 +36,9 @@ from typing import Any
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.gate_report import REF_H, REF_PPL, curve, load_run  # noqa: E402
+from scripts.gate_report import AGGREGATE_RE, REF_H, REF_PPL, curve, load_run  # noqa: E402
+
+FINAL_DIR = "final"  # T4.16, as in scripts/run_eval.py
 
 # (label, default run id) in the order of the paper's Table 1 and Figure A.
 DEFAULT_ARMS: list[tuple[str, str]] = [
@@ -117,6 +122,26 @@ def load_arm(results_dir: str | Path, run_id: str) -> list[dict[str, Any]] | Non
         return None
 
 
+def final_record(results_dir: str | Path,
+                 run_id: str) -> tuple[dict[str, Any] | None, str | None]:
+    """The merged SPEC 10.4 final eval of a run (T4.16), else ``None`` and the reason.
+
+    Raises ``ValueError`` for a final aggregate without ``ppl_mean``.
+    """
+    directory = Path(results_dir) / run_id / "eval" / FINAL_DIR
+    paths = sorted(p for p in directory.glob("step_*.json") if AGGREGATE_RE.match(p.name))
+    if not paths:
+        if any(directory.glob("step_*.seed_*.json")):
+            return None, ("final eval in eval/final/ not merged yet "
+                          "(run_eval.py --merge --final)")
+        return None, f"no {TABLE_SAMPLES} x {N_SEEDS} final eval in eval/final/ (SPEC 10.4; FINAL=1)"
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    for path, record in zip(paths, records):
+        if record.get("ppl_mean") is None:
+            raise ValueError(f"{path} has no ppl_mean; run run_eval.py --merge --final first")
+    return max(records, key=lambda record: int(record["step"])), None
+
+
 def model_params(record: dict[str, Any]) -> int | None:
     """Backbone + head parameters of an eval record; ``None`` if not logged.
 
@@ -162,11 +187,13 @@ def _positions(value: int | None) -> str:
 
 def table_rows(results_dir: str | Path,
                arms: list[tuple[str, str]]) -> tuple[list[dict[str, Any]], bool]:
-    """One row per arm from its last record; second value: any placeholder."""
+    """One row per arm from its final eval (T4.16), else from its last curve record;
+    second value: any placeholder."""
     rows: list[dict[str, Any]] = []
     any_placeholder = False
     for label, run_id in arms:
-        records = load_arm(results_dir, run_id)
+        final, missing = final_record(results_dir, run_id)
+        records = [final] if final is not None else load_arm(results_dir, run_id)
         if records is None:
             rows.append({"label": label, "run_id": run_id, "point": None,
                          "reasons": ["no merged eval records"]})
@@ -174,6 +201,8 @@ def table_rows(results_dir: str | Path,
             continue
         point = curve(records)[-1]
         reasons = run_reasons(results_dir, run_id, records)
+        if missing:
+            reasons.append(missing)
         record = records[-1]
         extra = eval_reason(record, TABLE_SAMPLES)
         if extra:
