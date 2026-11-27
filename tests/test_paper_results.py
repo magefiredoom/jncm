@@ -120,6 +120,16 @@ def _end_state(root: Path, run_id: str, *, joint: bool = False) -> None:
     final.write_text(json.dumps(record), encoding="utf-8")
 
 
+def _set_params(root: Path, run_id: str, **counts: int) -> None:
+    for path in (root / run_id / "eval").glob("step_*.json"):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for key in ("n_params_tokenizer", "n_params_backbone", "n_params_head",
+                    "n_params_total"):
+            record.pop(key, None)
+        record.update({f"n_params_{name}": value for name, value in counts.items()})
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+
 def test_table_and_fig_a_are_both_final_in_the_spec_end_state(tmp_path: Path, capsys) -> None:
     """Review 2026-11-26 M1: Table 1 needs the 1024 x 5 final eval, and Figure A must
     accept it, since it replaces the 256-sample record of the final milestone."""
@@ -162,6 +172,38 @@ def test_fig_a_formats_both_panels(tmp_path: Path, monkeypatch) -> None:
         axes = kept[-1].axes
         assert [ax.get_title() for ax in axes] == titles
         assert all(ax.get_yscale() == "log" and ax.get_xlabel() for ax in axes)
+
+def test_table_footnotes_the_tokenizer_a_joint_run_trains(tmp_path: Path) -> None:
+    """Review 2026-11-26 M2: a joint run also trains its tokenizer (train_jepa.py gives
+    AdamW the tokenizer, backbone and head), so its backbone + head cell is footnoted."""
+    for run_id, joint in (("gen_noisy_flow_dev", False), ("jepa_base_dev", True)):
+        _end_state(tmp_path, run_id, joint=joint)
+        _set_params(tmp_path, run_id, tokenizer=8_270_048, backbone=85_459_200,
+                    head=15_065_184, total=108_794_432)
+    arms = [("continuous + flow", "gen_noisy_flow_dev"), ("JEPA (base)", "jepa_base_dev")]
+    rows, placeholder = paper_results.table_rows(tmp_path, arms)
+    assert placeholder is False
+    text = paper_results.render_table(rows, placeholder)
+    lines = text.splitlines()
+    flow = next(line for line in lines if line.startswith("| continuous + flow"))
+    jepa = next(line for line in lines if line.startswith("| JEPA (base)"))
+    mark = paper_results.JOINT_MARK
+    assert "| 100.5M |" in flow and mark not in flow
+    assert f"| 100.5M{mark} |" in jepa
+    note = next(line for line in lines if line.startswith(f"- {mark}"))
+    assert "`jepa_base_dev`" in note and "8.27M" in note and "108.8M" in note
+    assert "frozen tokenizer is excluded" not in text
+
+
+def test_joint_row_without_a_tokenizer_count_says_so(tmp_path: Path) -> None:
+    _end_state(tmp_path, "jepa_base_dev", joint=True)
+    _set_params(tmp_path, "jepa_base_dev", backbone=85_459_200, head=15_065_184)
+    rows, placeholder = paper_results.table_rows(tmp_path, [("JEPA (base)", "jepa_base_dev")])
+    text = paper_results.render_table(rows, placeholder)
+    note = next(line for line in text.splitlines()
+                if line.startswith(f"- {paper_results.JOINT_MARK}"))
+    assert "n_params_tokenizer" in note and "not logged" in note
+
 
 def test_fig_b_reads_last_acc_cum_and_r2_and_lists_unlogged(tmp_path: Path, capsys) -> None:
     _metrics(tmp_path, "tok_vq_10k", [{"step": 1, "acc_cum": [0.0, 0.0]},

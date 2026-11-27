@@ -47,6 +47,7 @@ TABLE_SAMPLES = 1024
 CURVE_SAMPLES = 256
 N_SEEDS = 5
 DAGGER = "†"
+JOINT_MARK = "‡"
 
 
 def parse_arms(specs: list[str] | None) -> list[tuple[str, str]]:
@@ -117,12 +118,36 @@ def load_arm(results_dir: str | Path, run_id: str) -> list[dict[str, Any]] | Non
 
 
 def model_params(record: dict[str, Any]) -> int | None:
-    """Backbone + head parameters of an eval record (the frozen tokenizer,
-    which ``n_params_total`` includes, is left out); ``None`` if not logged."""
+    """Backbone + head parameters of an eval record; ``None`` if not logged.
+
+    For a staged run these are all the trained parameters (its tokenizer is
+    frozen). A joint run also trains its tokenizer; see ``joint_note``.
+    """
     backbone, head = record.get("n_params_backbone"), record.get("n_params_head")
     if backbone is None or head is None:
         return None
     return int(backbone) + int(head)
+
+
+def is_joint(record: dict[str, Any]) -> bool:
+    """A joint (JEPA) eval record: it carries the conservative count (SPEC 6.2)."""
+    return record.get("total_positions_conservative") is not None
+
+
+def joint_note(label: str, run_id: str, record: dict[str, Any]) -> str:
+    """Footnote for a joint row: ``train_jepa.py`` gives AdamW the tokenizer as
+    well as the backbone and head, so the run trains more than backbone + head
+    (review 2026-11-26, M2). An EMA target copy gets no gradient and is not counted.
+    """
+    head = f"- {JOINT_MARK} {label} (`{run_id}`) is a joint run: it also trains its tokenizer"
+    params, tokenizer = model_params(record), record.get("n_params_tokenizer")
+    if params is None or tokenizer is None:
+        return (head + "; its trained total is unknown (`n_params_tokenizer` or the "
+                "backbone or head count is not logged).")
+    total = params + int(tokenizer)
+    return (head + f" ({int(tokenizer) / 1e6:.2f}M, `n_params_tokenizer`), so it updates "
+            f"{total / 1e6:.1f}M parameters; an EMA target copy gets no gradient and "
+            "is not counted.")
 
 
 def _num(value: float | None, digits: int, signed: bool = False) -> str:
@@ -169,6 +194,7 @@ def render_table(rows: list[dict[str, Any]], placeholder: bool) -> str:
                      "results (reasons below).**\n")
     lines += [header, "|" + "---|" * 11]
     notes: list[str] = []
+    joint_notes: list[str] = []
     for row in rows:
         point = row["point"]
         mark = DAGGER if row["reasons"] else ""
@@ -181,10 +207,15 @@ def render_table(rows: list[dict[str, Any]], placeholder: bool) -> str:
             continue
         h = point["h_gpt2"]
         params = model_params(row["record"])
+        joint = is_joint(row["record"])
+        if joint:
+            joint_notes.append(joint_note(row["label"], row["run_id"], row["record"]))
+        params_cell = ("n/a" if params is None else f"{params / 1e6:.1f}M") + (
+            JOINT_MARK if joint else "")
         cons = point["total_positions_conservative"]
         lines.append(
             f"| {row['label']}{mark} | `{row['run_id']}` "
-            f"| {'n/a' if params is None else f'{params / 1e6:.1f}M'} "
+            f"| {params_cell} "
             f"| {_positions(point['total_positions'])} "
             f"| {_positions(cons) if cons is not None else 'same'} "
             f"| {point['ppl']:.2f} ± {point['ppl_std']:.2f} "
@@ -196,9 +227,13 @@ def render_table(rows: list[dict[str, Any]], placeholder: bool) -> str:
     lines.append(f"Data row (real validation text, our pipeline): Gen PPL "
                  f"{REF_PPL:.2f}, H {REF_H:.2f}. PPL is mean ± std over sampling "
                  "seeds, one training seed (SPEC 10.7). Params are backbone + head "
-                 "(`n_params_backbone + n_params_head`; the frozen tokenizer "
-                 "is excluded). 'Positions (cons.)' charges both objectives "
+                 "(`n_params_backbone + n_params_head`): a staged run's tokenizer "
+                 f"is frozen and not counted; a joint run also trains its tokenizer "
+                 f"({JOINT_MARK}). 'Positions (cons.)' charges both objectives "
                  "of a joint run (SPEC 6.2); staged runs have one count.")
+    if joint_notes:
+        lines.append("")
+        lines += joint_notes
     if notes:
         lines.append("")
         lines += notes
