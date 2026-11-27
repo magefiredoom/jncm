@@ -1,4 +1,4 @@
-# SPEC — jncm (v1.7, 2026-11-25)
+# SPEC — jncm (v1.8, 2026-11-26)
 
 Source of truth for all implementation work. Items tagged **[DECISION]** are design choices that are NOT taken from the NCM paper. They belong to the researcher; do not change them, and record any problem you find in docs/QUESTIONS.md.
 
@@ -15,6 +15,8 @@ Source of truth for all implementation work. Items tagged **[DECISION]** are des
 **v1.6 changes** (2026-11-20; drafted by the agent at the researcher's explicit request after the first runs on the cluster, for the researcher to review): the backbone packs complementary levels instead of padding every level to L (5.2); all long runs use the dev size (5.7); the GPT-2 scorer's implementation and the cluster rule against importing `transformers` (6.1); the JEPA warm start is charged to the joint run (6.2, 8; QUESTIONS Q14); cluster runtime requirements (7); the experiment protocol: pilots, the corruption sweep and its selection rule, full runs, gates, ablation order, seeds (10, new).
 
 **v1.7 changes** (2026-11-25; drafted by the agent on 2026-11-21 in docs/PLAN_DIRECTION_2026-11-20.md section 8 and applied at the researcher's request): run outputs live on scratch, small records are copied to the local repository, and the staged tokenizers keep a second copy (7); per-seed eval shards are merged by a CPU job (6.1); when a run counts as trained (10.2, 10.3); a lost eval task is rerun alone (10.3); submission order and queue priority of the full runs (10.4).
+
+**v1.8 changes** (2026-11-26; drafted by the agent at the researcher's request and applied as drafted, with the researcher's choice of the 10.5 trigger): a second training seed for G0 and G1 flow, run before the ablations (10.6, 10.7); the flow head's width becomes a config key, and a size-matched flow control runs if G1 flow has a higher final Gen PPL than G0 (5.3, 10.5).
 
 ## 1. Purpose and scope
 
@@ -163,6 +165,7 @@ Pre-LN transformer: 12 layers, H = 768, 12 heads, MLP 4H with GELU, dropout 0.1,
   - Input: x_t [N,d_k], time embedding (sinusoidal, 128 dims), hidden state h [N,H]. Network: Linear(d_k + 128 + H -> 512), SiLU, 3 residual blocks (Linear 512 -> 512, SiLU), Linear(512 -> d_k).
   - Train: for each valid position draw `n_rep` = 4 pairs (t ~ U(0,1), eps ~ N(0,I)); x_t = (1-t)*eps + t*c_k; target velocity v = c_k - eps; loss MSE(net(x_t, t, h), v).
   - Sample: Euler integration from t = 0 to 1 with `flow_steps` = 8 steps, starting from eps ~ N(0,I); output x_1. Positions are independent given h (same factorization as NCM).
+  - Width (v1.8): the hidden width W (512 above) is the config key `flow_hidden`, default 512, which gives 15,065,184 head parameters at the dev sizes. The size-matched control of 10.5 uses W = 896: 38,750,304 head parameters against the ce head's 37,797,888. Nothing else in the head changes. The control matches parameters, not compute. It costs roughly 10% more per training step than G0 (*estimate* from per-position multiply-adds; its pilot measures it), while the W = 512 head costs under 3% more. **[DECISION]**
 - For `regress` and `flow`: after producing c-hat_k, sampling sets `code_k = c-hat_k + sigma_k * eps'` with fresh noise (`add_channel_noise`, default true), because the decoder was trained on noisy codes.
 
 ### 5.4 Conditioning corruption **[DECISION]** (principle from NCM Appendix F.3; schedule values are guesses to sweep)
@@ -278,11 +281,12 @@ Every arm is piloted on the code its long run will use before that long run is s
 
 - G0: final Gen PPL <= 20 and H >= 3.8.
 - G1: noisy + flow within 15% of the G0 Gen PPL at equal `total_positions` (linear interpolation inside the observed range only, else "not comparable"), and H within 0.15 of the data row. noisy + regress is reported, flagged when `pairwise_agree` > 0.5.
+- Size-matched control (v1.8): if noisy + flow has a higher final Gen PPL than G0 at equal `total_positions` (compared as in G1), even when it passes G1, one noisy + flow arm with `flow_hidden: 896` (5.3) is piloted (10.2), trained for 10,000 steps, evaluated like 10.4, and reported next to G1 flow. Otherwise the control is not run, and the paper argues the head-size gap from compute per step.
 - G2: JEPA base matches or beats the best Phase-1 arm at equal `total_positions`, judged under both accountings (6.2); each verdict names its accounting. If G2 fails, the paper reports JEPA as a negative result; the schedule does not change.
 
 ### 10.6 Ablations (Phase 2), in priority order
 
-Each is a full 10,000-step dev run with the same evaluation as 10.4. They are submitted in this order until the budget is spent, and the paper reports what ran.
+Each is a full 10,000-step dev run with the same evaluation as 10.4. They are submitted in this order, after the two training seeds of 10.7, until the budget is spent, and the paper reports what ran.
 
 1. `decoder_through_E: false`
 2. `vicreg: false`
@@ -295,4 +299,4 @@ A from-scratch JEPA run (no warm start, Q14) comes only after all six.
 
 ### 10.7 Seeds and variance
 
-The reported standard deviation is over sampling seeds; training variance is not measured unless budget remains after 10.6. In that case a second training seed (seed 43) goes first to G0 and then to the G1 arm closest to G0.
+The reported standard deviation is over sampling seeds. Training variance (v1.8): a second training seed (seed 43; the dev configs use 42) is run for G0 and for G1 noisy + flow before the 10.6 ablations, with the same config, steps and evaluation as 10.4. For these two arms, Table 1 reports the mean final Gen PPL over both training seeds and its spread, next to the sampling-seed std. The other arms have one training seed, and the paper says so.
